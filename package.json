@@ -1,0 +1,27 @@
+{
+  "name": "2d-3d-video-converter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chrome/Brave extension that converts any HTML5 video to side-by-side 3D in real time.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "fetch-model": "node scripts/fetch-model.mjs",
+    "test-page": "npx --yes http-server test -p 8080 -c-1",
+    "fetch-test-media": "node scripts/fetch-test-media.mjs",
+    "e2e": "node scripts/e2e.mjs",
+    "frame": "node scripts/frame.mjs",
+    "shots": "node scripts/shots.mjs"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.30.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.3.5",
+    "esbuild": "^0.28.2",
+    "puppeteer-core": "^25.13.0",
+    "typescript": "^7.0.2"
+  }
+}

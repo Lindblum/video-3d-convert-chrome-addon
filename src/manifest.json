@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "2D-3D Video Converter",
+  "version": "0.1.0",
+  "description": "Converts any HTML5 video to side-by-side 3D in real time for 3D TVs and monitors.",
+  "permissions": [
+    "storage"
+  ],
+  "action": {
+    "default_title": "2D-3D Video Converter",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "depth/host.html",
+        "depth/host.js",
+        "ort/*",
+        "models/*"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

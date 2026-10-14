@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>2D-3D Video Converter test page</title>
+    <style>
+      body { background: #111; color: #ddd; font: 14px system-ui, sans-serif; margin: 24px; }
+      section { margin-bottom: 32px; }
+      .letterbox { width: 800px; height: 600px; background: #222; }
+      .fill { width: 640px; height: 480px; object-fit: fill; }
+    </style>
+  </head>
+  <body>
+    <h1>2D-3D Video Converter test page</h1>
+    <p>Hover a video and click <b>3D</b>, or press Alt+Shift+D.
+      Media: <code>npm run fetch-test-media</code> downloads <code>media/bbb.mp4</code>.</p>
+
+    <section>
+      <h2>1. Plain video (16:9, native controls)</h2>
+      <video id="plain" src="media/bbb.mp4" width="960" height="540" controls loop muted playsinline>
+        <track kind="subtitles" src="captions.vtt" srclang="en" label="English" default />
+      </video>
+    </section>
+
+    <section>
+      <h2>2. Letterboxed (16:9 video in a 4:3 box, object-fit: contain)</h2>
+      <video id="letterbox" class="letterbox" src="media/bbb.mp4" controls loop muted playsinline></video>
+    </section>
+
+    <section>
+      <h2>3. Mock YouTube player (YouTube caption DOM)</h2>
+      <div class="html5-video-player" style="position: relative; width: 960px; height: 540px">
+        <video id="yt" src="media/bbb.mp4" style="width: 100%; height: 100%" loop muted playsinline></video>
+        <div class="ytp-caption-window-container" style="position: absolute; inset: 0; pointer-events: none">
+          <div class="caption-window" style="position: absolute; left: 50%; bottom: 8%; transform: translateX(-50%); text-align: center">
+            <span class="captions-text">
+              <span class="caption-visual-line" style="display: block"><span class="ytp-caption-segment" style="background: rgba(8, 8, 8, 0.75); color: #fff; font-size: 26px; font-family: 'YouTube Noto', Roboto, Arial, sans-serif; padding: 0 6px">YouTube-style caption, line one</span></span>
+              <span class="caption-visual-line" style="display: block"><span class="ytp-caption-segment" style="background: rgba(8, 8, 8, 0.75); color: #ff0; font-size: 26px; font-family: 'YouTube Noto', Roboto, Arial, sans-serif; padding: 0 6px">and a yellow second line</span></span>
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>4. Stretched (object-fit: fill)</h2>
+      <video id="fill" class="fill" src="media/bbb.mp4" controls loop muted playsinline></video>
+    </section>
+  </body>
+</html>

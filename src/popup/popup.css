@@ -1,0 +1,131 @@
+body {
+  width: 280px;
+  margin: 0;
+  padding: 12px 14px;
+  font: 13px/1.4 system-ui, sans-serif;
+  color: #e8e8e8;
+  background: #1b1c1f;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+h1 {
+  font-size: 16px;
+  margin: 0;
+}
+button {
+  min-width: 56px;
+  background: #3c4043;
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.on {
+  background: #1a73e8;
+}
+button:disabled {
+  background: #2a2b2f;
+  color: #777;
+  cursor: default;
+}
+.status {
+  color: #9aa0a6;
+  margin: 6px 0 10px;
+  min-height: 1.4em;
+}
+h2 {
+  font-size: 13px;
+  margin: 14px 0 4px;
+  padding-top: 10px;
+  border-top: 1px solid #333;
+  color: #c8c8c8;
+}
+h2 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+h2 label.check {
+  margin: 0;
+  cursor: pointer;
+}
+button.small {
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  background: #3c4043;
+}
+fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+fieldset:disabled {
+  opacity: 0.4;
+}
+h3 {
+  font-size: 12px;
+  font-weight: 500;
+  margin: 10px 0 4px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr;
+  gap: 2px 8px;
+  align-items: center;
+  font-size: 12px;
+  color: #c8c8c8;
+}
+.grid label {
+  margin: 0;
+}
+.grid output {
+  float: none;
+  display: block;
+  text-align: center;
+  font-size: 11px;
+}
+label {
+  display: block;
+  margin: 8px 0;
+}
+label.check {
+  margin: 6px 0;
+}
+select,
+input[type='range'] {
+  display: block;
+  width: 100%;
+  margin-top: 3px;
+}
+select {
+  background: #2a2b2f;
+  color: inherit;
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 3px;
+}
+output {
+  float: right;
+  color: #9aa0a6;
+}
+footer {
+  margin-top: 12px;
+  color: #9aa0a6;
+  font-size: 11px;
+}
+kbd {
+  background: #2a2b2f;
+  border-radius: 3px;
+  padding: 0 3px;
+}
+.status.warn {
+  color: #f6c344;
+}

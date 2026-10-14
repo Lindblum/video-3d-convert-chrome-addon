@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>2D-3D Video Converter</h1>
+      <button id="toggle" title="Turn 3D on or off for this video">Off</button>
+    </header>
+    <p id="status" class="status">Checking tab…</p>
+
+    <label>Depth
+      <select id="depthMode">
+        <option value="auto">Auto</option>
+        <option value="ml">ML (WebGPU)</option>
+        <option value="heuristic">Heuristic</option>
+      </select>
+    </label>
+
+    <label>Output
+      <select id="layout">
+        <option value="hsbs">SBS</option>
+        <option value="htab">TOB</option>
+        <option value="interlaced">Interlaced</option>
+        <option value="anaglyph">Anaglyph (red/cyan glasses)</option>
+        <option value="depth">Depth Map</option>
+        <option value="rgbd">Video | Depth Map</option>
+      </select>
+    </label>
+
+    <label>3D strength <output for="strength"></output>
+      <input id="strength" type="range" min="0.5" max="8" step="0.1" />
+    </label>
+
+    <label>Convergence <output for="convergence"></output>
+      <input id="convergence" type="range" min="0" max="1" step="0.01" />
+    </label>
+
+    <label>Smoothing <output for="smoothing"></output>
+      <input id="smoothing" type="range" min="0" max="0.95" step="0.01" />
+    </label>
+
+    <label>ML resolution
+      <select id="mlResolution">
+        <option value="196">196 px (fastest)</option>
+        <option value="252">252 px</option>
+        <option value="336">336 px</option>
+        <option value="420">420 px (best)</option>
+      </select>
+    </label>
+
+    <label class="check"><input id="swapEyes" type="checkbox" /> Swap eyes</label>
+    <label class="check"><input id="captions" type="checkbox" /> 3D captions (YouTube and standard)</label>
+    <label class="check"><input id="showStats" type="checkbox" /> Show stats overlay</label>
+
+    <h2>
+      <label class="check" title="Turns all of the post-processing below on or off. Your settings are kept.">
+        <input id="cleanup" type="checkbox" /> Artifact cleanup
+      </label>
+      <button id="resetCleanup" class="small" title="Set everything in Artifact cleanup back to the default, where nothing is altered.">Reset</button>
+    </h2>
+    <fieldset id="cleanupOptions">
+      <label title="Grows near objects' depth outward so their rims move with them. Raise this if you see bright or dark outlines (halos) around objects.">Edge dilation <output for="edgeDilation"></output>
+        <input id="edgeDilation" type="range" min="0" max="30" step="1" />
+      </label>
+      <label title="How strongly depth edges follow color edges. Higher is crisper but can make textured areas wobble. 0 = off.">Edge snapping <output for="edgeSnap"></output>
+        <input id="edgeSnap" type="range" min="0" max="1" step="0.05" />
+      </label>
+      <label title="How background revealed beside shifted objects is filled.">Hole fill
+        <select id="holeFill">
+          <option value="off">Off (stretch edges)</option>
+          <option value="mirror">Mirror (reflected background)</option>
+          <option value="soft">Soft (blurred background)</option>
+          <option value="sharp">Sharp (background)</option>
+        </select>
+      </label>
+    </fieldset>
+
+    <footer>
+      <kbd>Alt+Shift+D</kbd> toggles 3D on the video under the mouse
+    </footer>
+    <script src="popup.js"></script>
+  </body>
+</html>

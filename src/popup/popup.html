@@ -11,15 +11,20 @@
     </header>
     <p id="status" class="status">Checking tab…</p>
 
-    <label>Depth
-      <select id="depthMode">
+    <label title="How depth is estimated. Auto uses Depth Anything V2 and falls back to Heuristic if the GPU can't run it fast enough. The ML models run on the GPU via WebGPU and download once on first use. The rest are lightweight shaders that work on any GPU.">Algorithm
+      <select id="algorithm">
         <option value="auto">Auto</option>
-        <option value="ml">ML (WebGPU)</option>
-        <option value="heuristic">Heuristic</option>
+        <option value="heuristic" title="Blend of ground plane, brightness, color and center cues.">Heuristic</option>
+        <option value="da2" title="ML. The best balance of quality and speed.">Depth Anything V2</option>
+        <option value="da3" title="ML. Newer, about 12% slower than V2.">Depth Anything V3</option>
+        <option value="midas" title="ML. About 4x faster than Depth Anything but blurrier, for slow GPUs.">MiDaS</option>
+        <option value="scene" title="Picture content only: sharp, saturated, warm detail comes forward; hazy, washed-out, cool areas recede.">Scene Cues</option>
+        <option value="ground" title="Assumes a flat floor: lower in the frame is nearer, everything above the horizon is far.">Ground Plane</option>
+        <option value="motion" title="What moves faster on screen is nearer. Best with a moving camera; still shots fall back to a ground plane.">Motion Parallax</option>
       </select>
     </label>
 
-    <label>Output
+    <label>View Mode
       <select id="layout">
         <option value="hsbs">SBS</option>
         <option value="htab">TOB</option>
@@ -39,10 +44,13 @@
     </label>
 
     <label>Smoothing <output for="smoothing"></output>
-      <input id="smoothing" type="range" min="0" max="0.95" step="0.01" />
+      <input id="smoothing" type="range" min="0" max="0.99" step="0.01" />
+    </label>
+    <label class="check" title="The ML model makes about 12 depth maps a second. This crossfades between them over the time until the next one, so depth changes continuously instead of in steps. Adds about one depth-map interval (~80 ms) of lag. Shot changes still switch instantly.">
+      <input id="interpolateDepth" type="checkbox" /> Interpolate depth frames
     </label>
 
-    <label>ML resolution
+    <label title="Size of the frame fed to the Depth Anything models (MiDaS always uses 256x256).">ML resolution
       <select id="mlResolution">
         <option value="196">196 px (fastest)</option>
         <option value="252">252 px</option>
@@ -79,7 +87,8 @@
     </fieldset>
 
     <footer>
-      <kbd>Alt+Shift+D</kbd> toggles 3D on the video under the mouse
+      <kbd>Alt+Shift+D</kbd> toggles 3D on the video under the mouse<br />
+      <kbd>Alt+Shift+M</kbd> switches to the next view mode
     </footer>
     <script src="popup.js"></script>
   </body>

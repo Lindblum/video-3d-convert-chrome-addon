@@ -1,8 +1,11 @@
 import { DEPTH_FS, DILATE_FS, FULLSCREEN_VS, REFINE_FS, STEREO_FS } from './shaders';
-import type { HoleFill, Layout } from '../shared/settings';
+import type { HoleFill, Layout, ShaderDepth } from '../shared/settings';
 
 export interface FrameParams {
-  mode: 'ml' | 'heuristic';
+  /** Where depth comes from: the uploaded ML depth map, or one of the shader algorithms. */
+  mode: 'ml' | ShaderDepth;
+  /** The video frame changed since the last render (motion parallax only measures then). */
+  newFrame: boolean;
   layout: Layout;
   /** Percent of eye width. */
   strength: number;
@@ -11,6 +14,9 @@ export interface FrameParams {
   /** Weight of the new depth estimate this frame (1 = no smoothing). */
   alpha: number;
   mlRange: [number, number];
+  /** Range of the depth map before the newest one, and how far to blend from it (0..1). */
+  mlRangePrev: [number, number];
+  mlBlend: number;
   /** Video content rect inside one eye view, normalized, top-left origin. */
   content: [number, number, number, number];
   /** Composite the caption layer (see uploadCaptions). */
@@ -23,6 +29,9 @@ export interface FrameParams {
 }
 
 const HOLE_FILL_INDEX: Record<HoleFill, number> = { off: 0, sharp: 1, soft: 2, mirror: 3 };
+
+// Matches uMode in DEPTH_FS.
+const MODE_INDEX: Record<FrameParams['mode'], number> = { heuristic: 0, ml: 1, scene: 2, ground: 3, motion: 4 };
 
 const LAYOUT_INDEX: Record<Layout, number> = { hsbs: 0, htab: 1, depth: 2, anaglyph: 3, interlaced: 4, rgbd: 5 };
 /** Width of the depth state buffers; height follows the video aspect ratio. */
@@ -45,7 +54,13 @@ export class Renderer {
   private dilateU: Uniforms;
   private stereoU: Uniforms;
   private videoTex: WebGLTexture;
+  /** Samples videoTex through its mipmaps (scene cues); other passes keep plain bilinear. */
+  private mipSampler: WebGLSampler;
+  /** videoTex's mipmaps match the current frame. */
+  private mipsFresh = false;
   private mlTex: WebGLTexture;
+  /** The depth map before mlTex; the two swap on each upload. */
+  private mlTexPrev: WebGLTexture;
   private capTex: WebGLTexture;
   private state: { tex: WebGLTexture; fbo: WebGLFramebuffer }[] = [];
   private stateIdx = 0;
@@ -71,12 +86,18 @@ export class Renderer {
     this.refineProg = this.program(FULLSCREEN_VS, REFINE_FS);
     this.dilateProg = this.program(FULLSCREEN_VS, DILATE_FS);
     this.stereoProg = this.program(FULLSCREEN_VS, STEREO_FS);
-    this.depthU = this.uniforms(this.depthProg, ['uPrev', 'uVideo', 'uMl', 'uMode', 'uMlRange', 'uAlpha', 'uTexel']);
+    this.depthU = this.uniforms(this.depthProg, ['uPrev', 'uVideo', 'uMl', 'uMlPrev', 'uMode', 'uMlRange', 'uMlRangePrev', 'uMlBlend', 'uAlpha', 'uTexel', 'uReset', 'uNewFrame', 'uVideoMip']);
     this.refineU = this.uniforms(this.refineProg, ['uState', 'uGuide', 'uVideo', 'uLowSize', 'uSnap']);
     this.dilateU = this.uniforms(this.dilateProg, ['uDepth', 'uStep', 'uRadius']);
     this.stereoU = this.uniforms(this.stereoProg, ['uVideo', 'uDepth', 'uLayout', 'uStrength', 'uConv', 'uSwap', 'uContent', 'uCaptions', 'uCapOn', 'uCapDisp', 'uHeight', 'uHoleFill', 'uFillMargin', 'uDepthTexelX']);
     this.videoTex = this.texture();
+    this.mipSampler = gl.createSampler()!;
+    gl.samplerParameteri(this.mipSampler, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.samplerParameteri(this.mipSampler, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.samplerParameteri(this.mipSampler, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.samplerParameteri(this.mipSampler, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     this.mlTex = this.texture();
+    this.mlTexPrev = this.texture();
     this.capTex = this.texture();
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   }
@@ -92,11 +113,13 @@ export class Renderer {
       throw e;
     }
     this.hasVideo = true;
+    this.mipsFresh = false;
     this.ensureTargets(video.videoWidth, video.videoHeight);
   }
 
   uploadMlDepth(data: Float32Array, width: number, height: number) {
     const gl = this.gl;
+    [this.mlTex, this.mlTexPrev] = [this.mlTexPrev, this.mlTex];
     gl.bindTexture(gl.TEXTURE_2D, this.mlTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, width, height, 0, gl.RED, gl.FLOAT, data);
     this.hasMl = true;
@@ -119,7 +142,8 @@ export class Renderer {
   render(p: FrameParams) {
     const gl = this.gl;
     if (!this.hasVideo) return;
-    const mode = p.mode === 'ml' && this.hasMl ? 1 : 0;
+    // Until the first ML depth map arrives, use the heuristic.
+    const mode = p.mode === 'ml' && !this.hasMl ? 0 : MODE_INDEX[p.mode];
 
     // Pass 1: depth state ping-pong (+ low-res color guide via a second draw buffer).
     const prev = this.state[this.stateIdx];
@@ -131,11 +155,26 @@ export class Renderer {
     this.bind(0, prev.tex, this.depthU.uPrev);
     this.bind(1, this.videoTex, this.depthU.uVideo);
     this.bind(2, this.mlTex, this.depthU.uMl);
+    this.bind(3, this.mlTexPrev, this.depthU.uMlPrev);
     gl.uniform1i(this.depthU.uMode, mode);
     gl.uniform2f(this.depthU.uMlRange, p.mlRange[0], p.mlRange[1]);
+    gl.uniform2f(this.depthU.uMlRangePrev, p.mlRangePrev[0], p.mlRangePrev[1]);
+    gl.uniform1f(this.depthU.uMlBlend, p.mlBlend);
     gl.uniform1f(this.depthU.uAlpha, this.first ? 1 : p.alpha);
     gl.uniform2f(this.depthU.uTexel, 1 / this.stateSize[0], 1 / this.stateSize[1]);
+    gl.uniform1i(this.depthU.uReset, this.first ? 1 : 0);
+    gl.uniform1i(this.depthU.uNewFrame, p.newFrame ? 1 : 0);
+    if (mode === MODE_INDEX.scene) {
+      if (!this.mipsFresh) {
+        gl.bindTexture(gl.TEXTURE_2D, this.videoTex);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        this.mipsFresh = true;
+      }
+      this.bind(4, this.videoTex, this.depthU.uVideoMip);
+      gl.bindSampler(4, this.mipSampler);
+    }
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindSampler(4, null);
     this.stateIdx = 1 - this.stateIdx;
     this.first = false;
 
@@ -221,7 +260,7 @@ export class Renderer {
     const f = this.floatTargets;
     this.guideTex = alloc(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
     this.state = [0, 1].map(() => {
-      const tex = f ? alloc(w, h, gl.RG16F, gl.RG, gl.HALF_FLOAT) : alloc(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
+      const tex = f ? alloc(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT) : alloc(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
       const fbo = gl.createFramebuffer()!;
       gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);

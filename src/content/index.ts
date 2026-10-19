@@ -1,13 +1,24 @@
 // Content script entry: finds videos, wires the hover button, keyboard shortcuts and popup
 // messages, and manages one Session per converted video.
+import { depthBridge } from '../depth/bridge';
 import { TaintedVideoError } from '../render/renderer';
 import type { PopupRequest, PopupStatus } from '../shared/protocol';
-import { DEFAULT_SETTINGS, loadSettings, onSettingsChanged, type Settings } from '../shared/settings';
+import { DEFAULT_SETTINGS, loadSettings, onSettingsChanged, saveSettings, type Layout, type Settings } from '../shared/settings';
 import { Session } from './session';
 import { Overlay } from './ui';
 
 const MIN_W = 200;
 const MIN_H = 112;
+
+/** View modes in popup order, which Alt+Shift+M cycles through. */
+const LAYOUTS: [Layout, string][] = [
+  ['hsbs', 'SBS'],
+  ['htab', 'TOB'],
+  ['interlaced', 'Interlaced'],
+  ['anaglyph', 'Anaglyph'],
+  ['depth', 'Depth Map'],
+  ['rgbd', 'Video | Depth Map'],
+];
 
 declare global {
   interface Window {
@@ -33,6 +44,11 @@ function main() {
   });
 
   const ui = () => (overlay ??= new Overlay(toggle));
+  // Heuristic depth runs meanwhile; the model is cached after this first download.
+  depthBridge.onProgress = (f) => {
+    const pct = Math.round(f * 100);
+    ui().toast(pct < 100 ? `Downloading depth model (first use only)… ${pct}%` : 'Depth model downloaded', 3000);
+  };
 
   function candidates(): HTMLVideoElement[] {
     return [...document.querySelectorAll('video')].filter((v) => {
@@ -101,17 +117,26 @@ function main() {
     { passive: true },
   );
 
-  // Alt+Shift+D toggles 3D on the hovered (or largest) video. Handled in-page so it works
-  // inside the site's own fullscreen too.
+  // Alt+Shift+D toggles 3D on the hovered (or largest) video; Alt+Shift+M switches to the
+  // next view mode. Handled in-page so they work inside the site's own fullscreen too.
   window.addEventListener(
     'keydown',
     (e) => {
-      if (!e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey || e.code !== 'KeyD') return;
+      if (!e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey) return;
+      if (e.code !== 'KeyD' && e.code !== 'KeyM') return;
       const video = primary();
       if (!video) return;
       e.preventDefault();
       e.stopPropagation();
-      toggle(video);
+      if (e.code === 'KeyD') {
+        toggle(video);
+      } else {
+        const i = LAYOUTS.findIndex(([layout]) => layout === settings.layout);
+        const [layout, name] = LAYOUTS[(i + 1) % LAYOUTS.length];
+        settings = { ...settings, layout };
+        saveSettings({ layout });
+        ui().toast(`View mode: ${name}`, 2000);
+      }
     },
     true,
   );

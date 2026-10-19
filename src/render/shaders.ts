@@ -11,23 +11,33 @@ void main() {
 
 /**
  * Produces the next temporally-smoothed depth map (0 = far, 1 = near) from either the ML
- * output or monocular heuristics, blended with the previous state. Smoothing backs off
+ * output or one of the shader algorithms, blended with the previous state. Smoothing backs off
  * where the picture is changing, so moving edges don't drag a depth "ghost" behind them.
  * Also writes a low-res color image that guides the edge-aware upsample.
  */
 export const DEPTH_FS = /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
-layout(location = 0) out vec4 outState; // r = depth, g = luma (for motion detection)
+layout(location = 0) out vec4 outState; // r = depth, g = luma (for motion detection),
+                                        // b = accumulated motion (motion parallax)
 layout(location = 1) out vec4 outGuide; // low-res color matching the depth texels
 
 uniform sampler2D uPrev;
 uniform sampler2D uVideo;
 uniform sampler2D uMl;
-uniform int uMode;        // 0 = heuristic, 1 = ML
+uniform sampler2D uMlPrev; // the depth map before uMl, for interpolating between them
+uniform sampler2D uVideoMip; // the video through its mipmaps (bound for scene cues only)
+uniform int uMode;        // 0 = heuristic, 1 = ML, 2 = scene cues, 3 = ground plane, 4 = motion parallax
 uniform vec2 uMlRange;    // smoothed (low, high) percentiles of raw model output
+uniform vec2 uMlRangePrev; // ... for uMlPrev
+uniform float uMlBlend;   // 0 = previous depth map, 1 = newest (interpolation between updates)
 uniform float uAlpha;     // weight of the new estimate where the picture is still
 uniform vec2 uTexel;      // 1 / depth state size
+uniform bool uReset;      // history was just cleared (start, seek, scene cut)
+uniform bool uNewFrame;   // the video frame changed since the last pass
+
+const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+const float HORIZON = 0.38; // assumed horizon, as a fraction of the height from the top
 
 float heuristicDepth(vec2 uv) {
   vec3 c = vec3(0.0);
@@ -42,23 +52,92 @@ float heuristicDepth(vec2 uv) {
   return clamp(0.5 * vertical + 0.2 * luma + 0.15 * sat + 0.25 * center - 0.05, 0.0, 1.0);
 }
 
+/** A flat floor seen from eye height: disparity grows linearly below the horizon. */
+float groundPlaneDepth(vec2 uv) {
+  return clamp((uv.y - HORIZON) / (1.0 - HORIZON), 0.0, 1.0);
+}
+
+/**
+ * Picture-content cues only, no assumptions about layout: sharp detail (in focus),
+ * saturated and warm colors come forward; bright, washed-out haze (aerial perspective)
+ * and cool colors recede.
+ */
+float sceneCuesDepth(vec2 uv) {
+  // Taps 3 texels apart, each read from the mip level whose pixels are that big, so a tap
+  // averages its whole cell. Point samples would stamp the tap grid onto fine detail.
+  float lod = log2(3.0 * float(textureSize(uVideoMip, 0).x) * uTexel.x);
+  // Gaussian weights, so a bright speck fades in and out instead of switching on per tap.
+  vec3 sum = vec3(0.0);
+  float l2 = 0.0;
+  float wsum = 0.0;
+  for (int i = -2; i <= 2; i++)
+    for (int j = -2; j <= 2; j++) {
+      float w = exp(-float(i * i + j * j) / 4.0);
+      vec3 s = textureLod(uVideoMip, uv + vec2(float(i), float(j)) * uTexel * 3.0, lod).rgb;
+      float l = dot(s, LUMA);
+      sum += w * s;
+      l2 += w * l * l;
+      wsum += w;
+    }
+  vec3 c = sum / wsum;
+  float luma = dot(c, LUMA);
+  float contrast = sqrt(max(l2 / wsum - luma * luma, 0.0));
+  float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+  float detail = smoothstep(0.01, 0.15, contrast);
+  float warmth = clamp((c.r - c.b) * 2.0 + 0.5, 0.0, 1.0);
+  float haze = smoothstep(0.5, 0.9, luma) * (1.0 - smoothstep(0.05, 0.25, sat));
+  return clamp(0.3 * detail + 0.35 * smoothstep(0.0, 0.5, sat) + 0.15 * warmth + 0.2 - 0.3 * haze, 0.0, 1.0);
+}
+
+/**
+ * Motion parallax: with a moving camera, nearer things sweep across the screen faster.
+ * Measures normal flow (luma change over luma gradient, in texels per frame) where there is
+ * enough texture to measure it, and keeps a running average in the state's b channel that
+ * slowly spreads into flat areas. Returns the updated average (0 = still, 1 = fast).
+ */
+float motionAccum(vec2 uv, float luma, vec4 prev) {
+  if (uReset) return 0.0;
+  if (!uNewFrame) return prev.b;
+  vec2 tx = vec2(uTexel.x, 0.0);
+  vec2 ty = vec2(0.0, uTexel.y);
+  // Neighbour average: motion seen on edges diffuses into the textureless areas between them.
+  float acc = 0.2 * (prev.b + texture(uPrev, uv + tx).b + texture(uPrev, uv - tx).b +
+                     texture(uPrev, uv + ty).b + texture(uPrev, uv - ty).b);
+  vec2 grad = 0.5 * vec2(dot(texture(uVideo, uv + tx).rgb - texture(uVideo, uv - tx).rgb, LUMA),
+                         dot(texture(uVideo, uv + ty).rgb - texture(uVideo, uv - ty).rgb, LUMA));
+  float g = length(grad);
+  float dt = max(abs(luma - prev.g) - 0.01, 0.0); // minus compression noise
+  float flow = dt / max(g, 0.02);
+  return mix(acc, flow / (flow + 1.0), 0.15 * smoothstep(0.02, 0.08, g));
+}
+
 void main() {
   vec2 uv = vUv;
-  float d;
-  if (uMode == 1) {
-    float raw = texture(uMl, uv).r;
-    d = clamp((raw - uMlRange.x) / max(uMlRange.y - uMlRange.x, 1e-4), 0.0, 1.0);
-  } else {
-    d = heuristicDepth(uv);
-  }
   vec2 o = uTexel * 0.25;
   vec3 c = 0.25 * (texture(uVideo, uv + vec2(-o.x, -o.y)).rgb + texture(uVideo, uv + vec2(o.x, -o.y)).rgb +
                    texture(uVideo, uv + vec2(-o.x, o.y)).rgb + texture(uVideo, uv + vec2(o.x, o.y)).rgb);
-  float luma = dot(c, vec3(0.299, 0.587, 0.114));
-  vec2 prev = texture(uPrev, uv).rg;
+  float luma = dot(c, LUMA);
+  vec4 prev = texture(uPrev, uv);
+  float motionAvg = 0.0;
+  float d;
+  if (uMode == 1) {
+    float cur = clamp((texture(uMl, uv).r - uMlRange.x) / max(uMlRange.y - uMlRange.x, 1e-4), 0.0, 1.0);
+    float prevMl = clamp((texture(uMlPrev, uv).r - uMlRangePrev.x) / max(uMlRangePrev.y - uMlRangePrev.x, 1e-4), 0.0, 1.0);
+    d = mix(prevMl, cur, uMlBlend);
+  } else if (uMode == 2) {
+    d = sceneCuesDepth(uv);
+  } else if (uMode == 3) {
+    d = groundPlaneDepth(uv);
+  } else if (uMode == 4) {
+    motionAvg = motionAccum(uv, luma, prev);
+    // Where nothing has moved yet (a still shot), fall back on the ground plane.
+    d = clamp(0.35 * groundPlaneDepth(uv) + 1.5 * motionAvg, 0.0, 1.0);
+  } else {
+    d = heuristicDepth(uv);
+  }
   float motion = abs(luma - prev.g);
   float a = max(uAlpha, smoothstep(0.03, 0.15, motion));
-  outState = vec4(mix(prev.r, d, a), luma, 0.0, 1.0);
+  outState = vec4(mix(prev.r, d, a), luma, motionAvg, 1.0);
   outGuide = vec4(c, 1.0);
 }`;
 

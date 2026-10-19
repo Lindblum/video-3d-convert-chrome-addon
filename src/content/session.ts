@@ -2,11 +2,18 @@
 // share of the depth model.
 import { depthBridge, type DepthResult } from '../depth/bridge';
 import { Renderer, TaintedVideoError } from '../render/renderer';
-import type { Settings } from '../shared/settings';
+import { mlModel, type Algorithm, type Settings, type ShaderDepth } from '../shared/settings';
 import { Captions } from './captions';
 import { DepthChangeDetector } from './depthchange';
 import { SceneCutDetector } from './scenecut';
 import type { Overlay } from './ui';
+
+const SHADER_LABELS: Record<ShaderDepth, string> = {
+  heuristic: 'Heuristic depth',
+  scene: 'Scene cues depth',
+  ground: 'Ground plane depth',
+  motion: 'Motion parallax depth',
+};
 
 /** Auto mode gives up on ML depth if inference is slower than this (ms, averaged). */
 const AUTO_MAX_INFER_MS = 150;
@@ -43,6 +50,11 @@ export class Session {
   private capturing = false;
   private resetOnNextDepth = false;
   private mlRange: [number, number] | null = null;
+  /** Interpolation between depth maps: the previous map's range, when the newest arrived,
+   * and the typical time between arrivals. */
+  private mlRangePrev: [number, number] = [0, 1];
+  private mlArrival = -Infinity;
+  private mlInterval = 80;
   private started = false;
   private mlActive = false;
   /** The depth map is older than the current video frame. */
@@ -98,7 +110,7 @@ export class Session {
   }
 
   applySettings(s: Settings) {
-    const modeChanged = s.depthMode !== this.settings.depthMode || !this.started;
+    const modeChanged = s.algorithm !== this.settings.algorithm || !this.started;
     if (s.layout === 'interlaced' && (this.settings.layout !== 'interlaced' || !this.started) && !document.fullscreenElement) {
       this.overlay.toast('Interlaced rows only line up with the TV in fullscreen at native resolution.', 5000);
     }
@@ -110,19 +122,23 @@ export class Session {
       this.mlActive = false;
       this.mlFailed = '';
       this.mlCount = 0;
-      if (s.depthMode !== 'heuristic' && depthBridge.state === 'ready') {
+      this.mlRange = null;
+      // Shader algorithms keep a different history (motion parallax's accumulator), so start fresh.
+      this.renderer.resetHistory();
+      const algorithm = s.algorithm;
+      const model = mlModel(algorithm);
+      if (model && depthBridge.isReady(model)) {
         this.mlActive = true;
         this.mlStale = true;
-      } else if (s.depthMode !== 'heuristic') {
-        const mode = s.depthMode;
-        depthBridge.ensureLoaded().then((ok) => {
-          if (this.settings.depthMode !== mode) return;
+      } else if (model) {
+        depthBridge.ensureLoaded(model).then((ok) => {
+          if (this.settings.algorithm !== algorithm) return;
           if (ok) {
             this.mlActive = true;
             this.mlStale = true;
           } else {
             this.mlFailed = depthBridge.error;
-            if (mode === 'ml') this.overlay.toast(`ML depth unavailable (${depthBridge.error}). Using heuristic depth.`, 6000);
+            if (algorithm !== 'auto') this.overlay.toast(`ML depth unavailable (${depthBridge.error}). Using heuristic depth.`, 6000);
           }
         });
       }
@@ -143,8 +159,14 @@ export class Session {
 
   get modeLabel(): string {
     if (this.mlActive) return `ML depth (${depthBridge.provider})`;
-    if (this.settings.depthMode !== 'heuristic' && depthBridge.state === 'loading') return 'Heuristic (loading ML…)';
-    return 'Heuristic depth';
+    if (mlModel(this.settings.algorithm) && depthBridge.state === 'loading') return 'Heuristic (loading ML model…)';
+    return SHADER_LABELS[this.shaderDepth];
+  }
+
+  /** The shader algorithm in use whenever ML depth isn't (ML algorithms fall back to heuristic). */
+  private get shaderDepth(): ShaderDepth {
+    const a: Algorithm = this.settings.algorithm;
+    return a === 'scene' || a === 'ground' || a === 'motion' ? a : 'heuristic';
   }
 
   private on(target: EventTarget, type: string, fn: EventListener) {
@@ -222,22 +244,36 @@ export class Session {
         this.idle = 0;
       }
     }
+    if (this.depthBlend() < 1) this.idle = 0;
     if (this.idle++ > IDLE_FRAMES) return;
 
     this.renderer.render({
-      mode: this.mlActive ? 'ml' : 'heuristic',
+      mode: this.mlActive ? 'ml' : this.shaderDepth,
+      newFrame: frameChanged,
       layout: s.layout,
       strength: s.strength,
       convergence: s.convergence,
       swapEyes: s.swapEyes,
       alpha: 1 - s.smoothing,
       mlRange: this.mlRange ?? [0, 1],
+      mlRangePrev: this.mlRangePrev,
+      mlBlend: this.depthBlend(),
       content,
       captions: this.captionsOn && this.captions.hasContent,
       ...this.cleanupParams(),
     });
     this.renderFrames++;
   };
+
+  /**
+   * How far to crossfade from the previous ML depth map to the newest (0..1). Depth maps
+   * arrive only ~12 times a second; interpolating over the time until the next one turns
+   * those steps into continuous change, at the cost of about one more interval of lag.
+   */
+  private depthBlend(): number {
+    if (!this.settings.interpolateDepth) return 1;
+    return Math.min(1, Math.max(0, (performance.now() - this.mlArrival) / this.mlInterval));
+  }
 
   /** Artifact cleanup settings for the renderer, or all of them off if the section is off. */
   private cleanupParams() {
@@ -294,11 +330,12 @@ export class Session {
     return [(1 - w) / 2, (1 - h) / 2, w, h];
   }
 
-  private async captureForMl() {
+  private captureForMl() {
     if (this.capturing || depthBridge.busy) return;
-    this.capturing = true;
-    this.mlStale = false;
     const v = this.video;
+    // MiDaS takes a fixed 256x256 square (the picture is squeezed to fit); the Depth Anything
+    // models take any size in 14 px patches.
+    if (mlModel(this.settings.algorithm) === 'midas') return this.inferMl(256, 256);
     const aspect = v.videoWidth / v.videoHeight;
     const short = this.settings.mlResolution;
     let w = aspect >= 1 ? short * aspect : short;
@@ -306,10 +343,17 @@ export class Session {
     const k = Math.min(1, ML_MAX_LONG_SIDE / Math.max(w, h));
     w = Math.max(PATCH, Math.round((w * k) / PATCH) * PATCH);
     h = Math.max(PATCH, Math.round((h * k) / PATCH) * PATCH);
+    this.inferMl(w, h);
+  }
+
+  /** Captures the current frame at w x h and runs it through the ML model. */
+  private async inferMl(w: number, h: number) {
+    this.capturing = true;
+    this.mlStale = false;
     const shot = this.shot;
     let result: DepthResult | null = null;
     try {
-      const bitmap = await createImageBitmap(v, { resizeWidth: w, resizeHeight: h, resizeQuality: 'low' });
+      const bitmap = await createImageBitmap(this.video, { resizeWidth: w, resizeHeight: h, resizeQuality: 'low' });
       result = await depthBridge.infer(bitmap);
     } catch (e) {
       console.warn('[2D-3D] frame capture failed:', e);
@@ -323,6 +367,11 @@ export class Session {
 
   private onDepth(r: DepthResult) {
     this.renderer.uploadMlDepth(r.data, r.width, r.height);
+    const now = performance.now();
+    const since = now - this.mlArrival;
+    if (since < 500) this.mlInterval = Math.min(250, Math.max(30, this.mlInterval * 0.8 + since * 0.2));
+    this.mlArrival = now;
+    this.mlRangePrev = this.mlRange ?? [r.min, r.max];
     // A drastic change in the depth layout (a cut the color detector missed, or violent
     // motion): snap to the new depth instead of blending into it.
     const jumped = this.depthChange.measure(r.data, r.min, r.max) > DEPTH_JUMP;
@@ -336,6 +385,7 @@ export class Session {
       this.mlRange = [r.min, r.max];
       this.renderer.resetHistory();
       this.resetOnNextDepth = false;
+      this.mlArrival = -Infinity; // show the new shot's depth at once, no crossfade from the old
     } else {
       // Smooth the normalization range a little so global depth doesn't jitter.
       const a = RANGE_FOLLOW;
@@ -348,7 +398,7 @@ export class Session {
     if (this.mlCount <= ML_WARMUP_RUNS) return;
     const n = this.mlCount - ML_WARMUP_RUNS;
     this.mlMsAvg = n === 1 ? r.ms : this.mlMsAvg * 0.8 + r.ms * 0.2;
-    if (this.settings.depthMode === 'auto' && n >= 5 && this.mlMsAvg > AUTO_MAX_INFER_MS) {
+    if (this.settings.algorithm === 'auto' && n >= 5 && this.mlMsAvg > AUTO_MAX_INFER_MS) {
       this.mlActive = false;
       this.mlFailed = `too slow (${Math.round(this.mlMsAvg)} ms/frame)`;
       this.overlay.toast(`ML depth is too slow on this GPU (${Math.round(this.mlMsAvg)} ms). Switched to heuristic depth.`, 6000);
@@ -364,7 +414,7 @@ export class Session {
 
   private updateStats() {
     // Exposed on the canvas for debugging and the e2e test.
-    this.canvas.dataset.mode = this.mlActive ? 'ml' : 'heuristic';
+    this.canvas.dataset.mode = this.mlActive ? 'ml' : this.shaderDepth;
     this.canvas.dataset.renderFps = String(this.renderFrames);
     this.canvas.dataset.depthFps = String(this.depthFrames);
     this.canvas.dataset.depthMs = String(Math.round(this.mlMsAvg));

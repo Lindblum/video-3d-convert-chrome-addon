@@ -1,9 +1,8 @@
 // Bundles the extension into ./dist. Usage: node build.mjs [--watch]
 import * as esbuild from 'esbuild';
-import { cp, mkdir, rm, stat } from 'node:fs/promises';
+import { cp, mkdir, rm } from 'node:fs/promises';
 
 const watch = process.argv.includes('--watch');
-const MODELS = ['models/depth-anything-v2-small-fp16.onnx', 'models/depth-anything-v2-small-fp32.onnx'];
 // The onnxruntime-web/webgpu bundle embeds its JS glue and only fetches this wasm file.
 const ORT_WASM = ['ort-wasm-simd-threaded.asyncify.wasm'];
 
@@ -11,21 +10,12 @@ async function copyStatic() {
   await mkdir('dist/depth', { recursive: true });
   await mkdir('dist/popup', { recursive: true });
   await mkdir('dist/ort', { recursive: true });
-  await mkdir('dist/models', { recursive: true });
   await cp('src/manifest.json', 'dist/manifest.json');
   await cp('src/depth/host.html', 'dist/depth/host.html');
   await cp('src/popup/popup.html', 'dist/popup/popup.html');
   await cp('src/popup/popup.css', 'dist/popup/popup.css');
   await cp('src/icons', 'dist/icons', { recursive: true });
   for (const f of ORT_WASM) await cp(`node_modules/onnxruntime-web/dist/${f}`, `dist/ort/${f}`);
-  for (const model of MODELS) {
-    try {
-      await stat(model);
-      await cp(model, `dist/${model}`);
-    } catch {
-      console.warn(`\n!! ${model} missing: run "npm run fetch-model". ML depth may fall back to heuristic.\n`);
-    }
-  }
 }
 
 const common = {

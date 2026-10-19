@@ -125,7 +125,7 @@ try {
     console.log('WebGPU adapter:', gpu);
     if (args.includes('--bench')) {
       // Force ML mode and sample steady-state inference timing.
-      await hostFrame.evaluate(() => chrome.storage.local.set({ depthMode: 'ml' }));
+      await hostFrame.evaluate(() => chrome.storage.local.set({ algorithm: 'da2' }));
       for (let i = 0; i < 12; i++) {
         await sleep(1000);
         const d = await canvas.evaluate((c) => ({ ...c.dataset }));
@@ -177,7 +177,7 @@ try {
     if (await stat('test/media/cuts.mp4').then(() => true, () => false)) {
       const plainCuts = await page.$eval('#plain + canvas', (c) => Number(c.dataset.cuts ?? 0));
       const plainLoops = await page.evaluate(() => window.__plainLoops);
-      console.log(`Cuts detected on continuous clip: ${plainCuts} (expected ${plainLoops}, one per loop restart)`);
+      console.log(`Cuts detected on continuous clip: ${plainCuts} (at most ${plainLoops}: loop restarts are real cuts but may also be handled as seeks)`);
       const fill = await page.$('#fill');
       // Pause the other 3D videos so this one gets the (shared, one-at-a-time) depth model.
       await page.evaluate(() => ['#plain', '#letterbox'].forEach((id) => document.querySelector(id).pause()));

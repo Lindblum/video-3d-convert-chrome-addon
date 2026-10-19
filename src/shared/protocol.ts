@@ -1,11 +1,14 @@
 // Messages exchanged over the MessagePort between the content script and the depth host iframe.
+import type { DepthModel } from './settings';
 
 export type ToHost =
-  | { type: 'init' }
+  | { type: 'init'; model: DepthModel }
   | { type: 'frame'; id: number; bitmap: ImageBitmap };
 
 export type FromHost =
   | { type: 'ready'; provider: string }
+  /** Bytes of the model downloaded so far (first use only; cached afterwards). */
+  | { type: 'progress'; loaded: number; total: number }
   | { type: 'error'; message: string }
   | { type: 'frame-error'; id: number; message: string }
   | {

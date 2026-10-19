@@ -24,6 +24,11 @@ const MIN_BASELINE = 0.004;
  * they aren't consecutive, so comparing them says nothing about cuts: start over instead.
  */
 const MAX_GAP_MS = 250;
+/**
+ * Likewise if more than this much video passed between checks (the browser stalled and
+ * frames were skipped): several frames' worth of motion would look like a cut.
+ */
+const MAX_MEDIA_GAP_S = 0.1;
 
 export class SceneCutDetector {
   private canvas = new OffscreenCanvas(W * SS, H * SS);
@@ -36,12 +41,15 @@ export class SceneCutDetector {
   /** Frame-to-frame changes of the last few checks. */
   private recent: number[] = [];
   private last = 0;
+  private lastMediaTime = -1;
 
   /** Call on new video frames; returns true if this frame starts a new shot. */
   check(video: HTMLVideoElement, now: number): boolean {
     if (now - this.last < MIN_INTERVAL_MS) return false;
-    if (now - this.last > MAX_GAP_MS) this.reset();
+    const mediaGap = video.currentTime - this.lastMediaTime;
+    if (now - this.last > MAX_GAP_MS || mediaGap < 0 || mediaGap > MAX_MEDIA_GAP_S) this.reset();
     this.last = now;
+    this.lastMediaTime = video.currentTime;
     let px: Uint8ClampedArray;
     try {
       this.ctx.drawImage(video, 0, 0, W * SS, H * SS);

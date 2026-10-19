@@ -35,7 +35,7 @@ export class Overlay {
     this.layer.className = 'layer';
     this.button = document.createElement('button');
     this.button.className = 'btn';
-    this.button.title = '2D → 3D (Alt+Shift+D)';
+    this.button.title = '2D → 3D (Alt+Shift+D) · next output mode (Alt+Shift+M)';
     this.button.addEventListener('click', (e) => {
       e.stopPropagation();
       e.preventDefault();
@@ -59,7 +59,7 @@ export class Overlay {
   showButton(video: HTMLVideoElement, active: boolean) {
     const r = video.getBoundingClientRect();
     this.buttonTarget = video;
-    this.button.textContent = active ? '3D ON' : '3D';
+    this.button.textContent = active ? '3D' : '2D';
     this.button.classList.toggle('on', active);
     this.button.style.left = `${Math.max(4, r.left + 12)}px`;
     this.button.style.top = `${Math.max(4, r.top + 12)}px`;

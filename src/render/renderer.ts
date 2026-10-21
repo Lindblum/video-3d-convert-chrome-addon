@@ -67,6 +67,16 @@ export class Renderer {
   private stateSize = [0, 0];
   /** Low-res color written alongside the depth state; guides the edge-aware upsample. */
   private guideTex: WebGLTexture | null = null;
+  /**
+   * The low-res frames (copies of the guide) that mlTex and mlTexPrev were computed from,
+   * and the one captured for the depth map still being computed. For estimating how the
+   * picture moved since each depth map's frame.
+   */
+  private mlFrame: WebGLTexture | null = null;
+  private mlFramePrev: WebGLTexture | null = null;
+  private mlFramePending: WebGLTexture | null = null;
+  /** Copy the next rendered frame's guide into mlFramePending. */
+  private capturePending = false;
   private refined: { tex: WebGLTexture; fbo: WebGLFramebuffer } | null = null;
   private dilated: { tex: WebGLTexture; fbo: WebGLFramebuffer } | null = null;
   /** Horizontal half of the separable dilation. */
@@ -124,9 +134,15 @@ export class Renderer {
   uploadMlDepth(data: Float32Array, width: number, height: number) {
     const gl = this.gl;
     [this.mlTex, this.mlTexPrev] = [this.mlTexPrev, this.mlTex];
+    [this.mlFrame, this.mlFramePrev, this.mlFramePending] = [this.mlFramePending, this.mlFrame, this.mlFramePrev];
     gl.bindTexture(gl.TEXTURE_2D, this.mlTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, width, height, 0, gl.RED, gl.FLOAT, data);
     this.hasMl = true;
+  }
+
+  /** The current frame is being sent to the ML model: keep a low-res copy to go with its depth map. */
+  markMlCapture() {
+    this.capturePending = true;
   }
 
   /** Uploads the caption layer (straight alpha), stored premultiplied for compositing. */
@@ -181,6 +197,14 @@ export class Renderer {
     gl.bindSampler(4, null);
     this.stateIdx = 1 - this.stateIdx;
     this.first = false;
+    if (this.capturePending) {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, next.fbo);
+      gl.readBuffer(gl.COLOR_ATTACHMENT1);
+      gl.bindTexture(gl.TEXTURE_2D, this.mlFramePending);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, this.stateSize[0], this.stateSize[1]);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      this.capturePending = false;
+    }
 
     // Pass 2: edge-aware upsample of the depth state.
     const refined = this.refined!;
@@ -254,7 +278,7 @@ export class Renderer {
       gl.deleteTexture(t.tex);
       gl.deleteFramebuffer(t.fbo);
     }
-    if (this.guideTex) gl.deleteTexture(this.guideTex);
+    for (const t of [this.guideTex, this.mlFrame, this.mlFramePrev, this.mlFramePending]) if (t) gl.deleteTexture(t);
 
     const alloc = (tw: number, th: number, internal: number, format: number, type: number) => {
       const tex = this.texture();
@@ -263,6 +287,7 @@ export class Renderer {
     };
     const f = this.floatTargets;
     this.guideTex = alloc(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
+    [this.mlFrame, this.mlFramePrev, this.mlFramePending] = [0, 1, 2].map(() => alloc(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE));
     this.state = [0, 1].map(() => {
       const tex = f ? alloc(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT) : alloc(w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE);
       const fbo = gl.createFramebuffer()!;

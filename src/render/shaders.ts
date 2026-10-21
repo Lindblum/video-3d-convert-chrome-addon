@@ -111,6 +111,22 @@ float motionAccum(vec2 uv, float luma, vec4 prev) {
   return mix(acc, flow / (flow + 1.0), 0.15 * smoothstep(0.02, 0.08, g));
 }
 
+/** This frame's depth estimate, before temporal smoothing (all modes but motion parallax). */
+float estimate(vec2 uv) {
+  if (uMode == 1) {
+    float cur = clamp((texture(uMl, uv).r - uMlRange.x) / max(uMlRange.y - uMlRange.x, 1e-4), 0.0, 1.0);
+    float prevMl = clamp((texture(uMlPrev, uv).r - uMlRangePrev.x) / max(uMlRangePrev.y - uMlRangePrev.x, 1e-4), 0.0, 1.0);
+    return mix(prevMl, cur, uMlBlend);
+  }
+  if (uMode == 2) return sceneCuesDepth(uv);
+  if (uMode == 3) return groundPlaneDepth(uv);
+  return heuristicDepth(uv);
+}
+
+// How far smoothed depth may stray outside the new estimate's local range, so small flicker
+// is still averaged out.
+const float HISTORY_SLACK = 0.03;
+
 void main() {
   vec2 uv = vUv;
   vec2 o = uTexel * 0.25;
@@ -118,26 +134,32 @@ void main() {
                    texture(uVideo, uv + vec2(-o.x, o.y)).rgb + texture(uVideo, uv + vec2(o.x, o.y)).rgb);
   float luma = dot(c, LUMA);
   vec4 prev = texture(uPrev, uv);
+  float history = prev.r;
   float motionAvg = 0.0;
   float d;
-  if (uMode == 1) {
-    float cur = clamp((texture(uMl, uv).r - uMlRange.x) / max(uMlRange.y - uMlRange.x, 1e-4), 0.0, 1.0);
-    float prevMl = clamp((texture(uMlPrev, uv).r - uMlRangePrev.x) / max(uMlRangePrev.y - uMlRangePrev.x, 1e-4), 0.0, 1.0);
-    d = mix(prevMl, cur, uMlBlend);
-  } else if (uMode == 2) {
-    d = sceneCuesDepth(uv);
-  } else if (uMode == 3) {
-    d = groundPlaneDepth(uv);
-  } else if (uMode == 4) {
+  if (uMode == 4) {
     motionAvg = motionAccum(uv, luma, prev);
     // Where nothing has moved yet (a still shot), fall back on the ground plane.
     d = clamp(0.35 * groundPlaneDepth(uv) + 1.5 * motionAvg, 0.0, 1.0);
   } else {
-    d = heuristicDepth(uv);
+    d = estimate(uv);
+    // Limit the smoothed history to the range the new estimate has around this pixel (as
+    // temporal anti-aliasing does). Where an object has moved away, its old depth is outside
+    // that range and is dropped at once instead of fading out as a trail.
+    float lo = d;
+    float hi = d;
+    for (int i = -1; i <= 1; i++)
+      for (int j = -1; j <= 1; j++) {
+        if (i == 0 && j == 0) continue;
+        float n = estimate(uv + vec2(float(i), float(j)) * uTexel);
+        lo = min(lo, n);
+        hi = max(hi, n);
+      }
+    history = clamp(history, lo - HISTORY_SLACK, hi + HISTORY_SLACK);
   }
   float motion = abs(luma - prev.g);
   float a = max(uAlpha, smoothstep(0.03, 0.15, motion));
-  outState = vec4(mix(prev.r, d, a), luma, motionAvg, 1.0);
+  outState = vec4(mix(history, d, a), luma, motionAvg, 1.0);
   outGuide = vec4(c, 1.0);
 }`;
 
@@ -300,10 +322,9 @@ float magnification(vec2 uv, float srcX, float s) {
   return max(1.0 + s * slope, 1e-3);
 }
 
-// Where to take background color for a hole: walk from the source position away from the
-// foreground to the far end of the depth ramp, then a little further so the object's own
-// rim pixels aren't picked up.
-float backgroundX(vec2 uv, float srcX, float away) {
+// Where the background starts beside a hole: walk from the source position away from the
+// foreground to the far end of the depth ramp.
+float rampEndX(vec2 uv, float srcX, float away) {
   float w = 2.0 * uDepthTexelX;
   float best = srcX;
   float bestD = depthAt(vec2(srcX, uv.y));
@@ -315,7 +336,7 @@ float backgroundX(vec2 uv, float srcX, float away) {
       bestD = d;
     }
   }
-  return best + away * uFillMargin;
+  return best;
 }
 
 // The color one eye sees at video uv (before captions).
@@ -324,11 +345,19 @@ vec3 eyeColor(vec2 uv, float eye) {
   float srcX = uv.x - s * searchHit(uv, s);
   vec3 color = texture(uVideo, vec2(srcX, uv.y)).rgb;
   float hole = smoothstep(HOLE_LO, HOLE_HI, magnification(uv, srcX, s));
-  if (hole > 0.0 && uHoleFill > 0) {
+  if (hole > 0.0) {
     float away = -sign(s);
-    float bgX = backgroundX(uv, srcX, away);
+    float endX = rampEndX(uv, srcX, away);
+    // A little past the ramp's end, so the object's own rim pixels aren't picked up.
+    float bgX = endX + away * uFillMargin;
     vec3 fill;
-    if (uHoleFill == 3) {
+    if (uHoleFill == 0) {
+      // Stretch: repeat the pixel where the background starts. Taking srcX would stretch
+      // whatever video lies inside the depth ramp, and since the ramp sits at a slightly
+      // different place relative to the color edge on every row and object, the hole would
+      // be foreground in some places and background in others.
+      fill = texture(uVideo, vec2(endX, uv.y)).rgb;
+    } else if (uHoleFill == 3) {
       // Mirror: reflect the background across the hole's far edge. The background pixel at
       // bgX lands on screen at xFar; a hole pixel t in from there takes the background t out
       // on the other side, so the background's texture continues into the hole instead of

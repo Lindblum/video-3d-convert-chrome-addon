@@ -378,6 +378,7 @@ export class Session {
   private async inferMl(w: number, h: number) {
     this.capturing = true;
     this.mlStale = false;
+    this.renderer.markMlCapture(); // copied when this tick renders, the same frame as the bitmap
     const shot = this.shot;
     let result: DepthResult | null = null;
     try {

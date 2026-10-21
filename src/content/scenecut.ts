@@ -43,8 +43,8 @@ export class SceneCutDetector {
   private last = 0;
   private lastMediaTime = -1;
 
-  /** Call on new video frames; returns true if this frame starts a new shot. */
-  check(video: HTMLVideoElement, now: number): boolean {
+  /** Call on new video frames; returns true if this frame starts a new shot. source: where to read the picture (default: the video). */
+  check(video: HTMLVideoElement, now: number, source: CanvasImageSource = video): boolean {
     if (now - this.last < MIN_INTERVAL_MS) return false;
     const mediaGap = video.currentTime - this.lastMediaTime;
     if (now - this.last > MAX_GAP_MS || mediaGap < 0 || mediaGap > MAX_MEDIA_GAP_S) this.reset();
@@ -52,7 +52,7 @@ export class SceneCutDetector {
     this.lastMediaTime = video.currentTime;
     let px: Uint8ClampedArray;
     try {
-      this.ctx.drawImage(video, 0, 0, W * SS, H * SS);
+      this.ctx.drawImage(source, 0, 0, W * SS, H * SS);
       px = this.ctx.getImageData(0, 0, W * SS, H * SS).data;
     } catch {
       return false;

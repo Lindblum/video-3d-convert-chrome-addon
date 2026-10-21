@@ -102,8 +102,11 @@ export class Renderer {
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   }
 
-  /** Uploads the current video frame. Throws TaintedVideoError for cross-origin/DRM video. */
-  uploadVideo(video: HTMLVideoElement) {
+  /**
+   * Uploads the current video frame (or a canvas holding it, such as Video Moutheyes' output).
+   * Throws TaintedVideoError for cross-origin/DRM video.
+   */
+  uploadVideo(video: HTMLVideoElement | HTMLCanvasElement) {
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.videoTex);
     try {
@@ -114,7 +117,8 @@ export class Renderer {
     }
     this.hasVideo = true;
     this.mipsFresh = false;
-    this.ensureTargets(video.videoWidth, video.videoHeight);
+    if (video instanceof HTMLVideoElement) this.ensureTargets(video.videoWidth, video.videoHeight);
+    else this.ensureTargets(video.width, video.height);
   }
 
   uploadMlDepth(data: Float32Array, width: number, height: number) {

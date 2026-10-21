@@ -84,9 +84,18 @@ export class Session {
     this.canvas.style.cssText = 'position:absolute;pointer-events:none;display:block;background:#000;margin:0;padding:0;border:0;';
     const z = getComputedStyle(this.video).zIndex;
     if (z !== 'auto') this.canvas.style.zIndex = z;
-    this.video.insertAdjacentElement('afterend', this.canvas);
+    this.placeCanvas();
 
     this.on(this.video, 'seeked', () => this.onDiscontinuity());
+    // The Video Moutheyes extension turned on or off for this video: switch picture source.
+    this.on(this.video, 'moutheyes:change', () => {
+      this.placeCanvas();
+      this.newFrame = true;
+      this.idle = 0;
+    });
+    this.on(this.video, 'moutheyes:frame', () => {
+      if (this.source !== this.video) this.newFrame = true;
+    });
     this.on(this.video, 'emptied', () => {
       this.cuts.reset();
       this.onDiscontinuity();
@@ -174,12 +183,30 @@ export class Session {
     this.listeners.push(() => target.removeEventListener(type, fn));
   }
 
+  /**
+   * Where the picture comes from: the video, or the Video Moutheyes extension's output for it
+   * while that's on (a canvas with the same frame, letterboxed like the video; see
+   * data-moutheyes in that extension's session.ts).
+   */
+  private get source(): HTMLVideoElement | HTMLCanvasElement {
+    const id = this.video.dataset.moutheyes;
+    const el = id ? document.getElementById(id) : null;
+    return el instanceof HTMLCanvasElement && el.isConnected && el.width > 2 ? el : this.video;
+  }
+
+  /** Keeps the 3D canvas directly above the picture source, so it covers a moutheyes canvas too. */
+  private placeCanvas() {
+    const src = this.source;
+    if (src.nextElementSibling !== this.canvas) src.insertAdjacentElement('afterend', this.canvas);
+  }
+
   private watchFrames() {
     const v = this.video;
     if (!('requestVideoFrameCallback' in v)) return; // fall back to uploading every tick
     let handle = 0;
     const cb = () => {
-      this.newFrame = true;
+      // A moutheyes source announces its own frames, a little after the video's.
+      if (this.source === v) this.newFrame = true;
       handle = v.requestVideoFrameCallback(cb);
     };
     handle = v.requestVideoFrameCallback(cb);
@@ -209,11 +236,12 @@ export class Session {
     if (v.readyState < 2 || !v.videoWidth) return;
 
     const boxChanged = this.layout();
+    const src = this.source;
     const hasRvfc = 'requestVideoFrameCallback' in v;
-    const frameChanged = this.newFrame || !hasRvfc;
+    const frameChanged = this.newFrame || (!hasRvfc && src === v);
     if (frameChanged) {
       try {
-        this.renderer.uploadVideo(v);
+        this.renderer.uploadVideo(src);
       } catch (e) {
         if (e instanceof TaintedVideoError) {
           this.overlay.toast("This video is protected (DRM or cross-origin), so the browser won't let the extension read its pixels.", 7000);
@@ -224,7 +252,7 @@ export class Session {
       this.newFrame = false;
       this.idle = 0;
       this.mlStale = true;
-      if (this.cuts.check(v, performance.now())) {
+      if (this.cuts.check(v, performance.now(), src)) {
         this.canvas.dataset.cuts = String(Number(this.canvas.dataset.cuts ?? 0) + 1);
         this.logShotEvent('cut');
         this.onDiscontinuity();
@@ -353,7 +381,7 @@ export class Session {
     const shot = this.shot;
     let result: DepthResult | null = null;
     try {
-      const bitmap = await createImageBitmap(this.video, { resizeWidth: w, resizeHeight: h, resizeQuality: 'low' });
+      const bitmap = await createImageBitmap(this.source, { resizeWidth: w, resizeHeight: h, resizeQuality: 'low' });
       result = await depthBridge.infer(bitmap);
     } catch (e) {
       console.warn('[2D-3D] frame capture failed:', e);

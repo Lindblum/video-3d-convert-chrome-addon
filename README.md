@@ -21,6 +21,11 @@ Half side-by-side (default), top-over-bottom, interlaced (passive 3D TVs; needs 
 at native resolution), anaglyph (red/cyan), depth map, and 2D + depth map side by side.
 YouTube captions and `<track>` subtitles are redrawn in 3D inside each eye.
 
+## With Video Moutheyes
+
+If the Video Moutheyes extension is also on for a video, the 3D conversion uses its output
+(mouths over the eyes) instead of the raw video, in whichever order the two were turned on.
+
 ## Build and install
 
 ```sh

@@ -46,26 +46,39 @@ export class Overlay {
     this.layer.append(this.button, this.toastEl);
     root.append(style, this.layer);
     this.reparent();
-    document.addEventListener('fullscreenchange', () => this.reparent());
+    document.addEventListener('fullscreenchange', this.reparent);
+  }
+
+  dispose() {
+    document.removeEventListener('fullscreenchange', this.reparent);
+    clearTimeout(this.toastTimer);
+    clearTimeout(this.hideTimer);
+    this.host.remove();
   }
 
   /** Keep the overlay inside the fullscreen element so it stays visible there. */
-  private reparent() {
+  private reparent = () => {
     const fs = document.fullscreenElement;
     const parent = fs && !(fs instanceof HTMLVideoElement) && !(fs instanceof HTMLCanvasElement) ? fs : document.documentElement;
     if (this.host.parentNode !== parent) parent.appendChild(this.host);
-  }
+  };
 
   showButton(video: HTMLVideoElement, active: boolean) {
     const r = video.getBoundingClientRect();
     this.buttonTarget = video;
-    this.button.textContent = active ? '3D' : '2D';
-    this.button.classList.toggle('on', active);
+    this.setButtonState(video, active);
     this.button.style.left = `${Math.max(4, r.left + 12)}px`;
     this.button.style.top = `${Math.max(4, r.top + 12)}px`;
     this.button.classList.add('show');
     clearTimeout(this.hideTimer);
     this.hideTimer = window.setTimeout(() => this.hideButton(), 2500);
+  }
+
+  /** Updates the button's label if it belongs to this video (e.g. right after a toggle). */
+  setButtonState(video: HTMLVideoElement, active: boolean) {
+    if (this.buttonTarget !== video) return;
+    this.button.textContent = active ? '2D-3D: On' : '2D-3D: Off';
+    this.button.classList.toggle('on', active);
   }
 
   hideButton() {

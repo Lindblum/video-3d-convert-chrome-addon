@@ -21,6 +21,8 @@ export interface Settings {
   smoothing: number;
   /** Crossfade between ML depth maps over the time until the next one, instead of stepping. */
   interpolateDepth: boolean;
+  /** Keep depth exactly as it was when the video paused, instead of letting it settle. */
+  freezeOnPause: boolean;
   swapEyes: boolean;
   showStats: boolean;
   /** Redraw captions inside each eye so they stay readable in SBS/TOB. */
@@ -51,6 +53,7 @@ export const DEFAULT_SETTINGS: Settings = {
   convergence: 0.35,
   smoothing: 0.75,
   interpolateDepth: true,
+  freezeOnPause: false,
   swapEyes: false,
   showStats: false,
   captions: true,

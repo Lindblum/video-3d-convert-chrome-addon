@@ -16,11 +16,25 @@ const FORMAT: Partial<Record<keyof Settings, (v: number) => string>> = {
 async function send(msg: PopupRequest): Promise<PopupStatus | null> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id == null) return null;
+  const ask = async () => {
+    try {
+      return ((await chrome.tabs.sendMessage(tab.id!, msg)) as PopupStatus | undefined) ?? null;
+    } catch {
+      return null; // no content script, or no frame with a video
+    }
+  };
+  const status = await ask();
+  if (status) return status;
+  // The tab's content script may be left over from before the extension was reloaded (the
+  // browser can do that on its own, e.g. after sleep): still running, but unreachable. A fresh
+  // copy takes over from it (see TAKEOVER in content/index.ts). It skips itself where a
+  // working copy is already loaded.
   try {
-    return (await chrome.tabs.sendMessage(tab.id, msg)) ?? null;
+    await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ['content.js'] });
   } catch {
-    return null; // no content script (chrome:// page, store) or no frame with a video
+    return null; // a page extensions can't touch (chrome://, the web store)
   }
+  return ask();
 }
 
 function showStatus(s: PopupStatus | null) {

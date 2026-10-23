@@ -5,7 +5,11 @@
   "description": "Converts any HTML5 video to side-by-side 3D in real time for 3D TVs and monitors.",
   "permissions": [
     "storage",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
   ],
   "action": {
     "default_title": "2D-3D Video Converter",

@@ -6,6 +6,8 @@ export interface FrameParams {
   mode: 'ml' | ShaderDepth;
   /** The video frame changed since the last render (motion parallax only measures then). */
   newFrame: boolean;
+  /** Keep the depth state as it is: skip the depth pass, still redraw everything after it. */
+  freezeDepth: boolean;
   layout: Layout;
   /** Percent of eye width. */
   strength: number;
@@ -166,45 +168,8 @@ export class Renderer {
     const mode = p.mode === 'ml' && !this.hasMl ? 0 : MODE_INDEX[p.mode];
 
     // Pass 1: depth state ping-pong (+ low-res color guide via a second draw buffer).
-    const prev = this.state[this.stateIdx];
-    const next = this.state[1 - this.stateIdx];
-    gl.bindFramebuffer(gl.FRAMEBUFFER, next.fbo);
-    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
-    gl.viewport(0, 0, this.stateSize[0], this.stateSize[1]);
-    gl.useProgram(this.depthProg);
-    this.bind(0, prev.tex, this.depthU.uPrev);
-    this.bind(1, this.videoTex, this.depthU.uVideo);
-    this.bind(2, this.mlTex, this.depthU.uMl);
-    this.bind(3, this.mlTexPrev, this.depthU.uMlPrev);
-    gl.uniform1i(this.depthU.uMode, mode);
-    gl.uniform2f(this.depthU.uMlRange, p.mlRange[0], p.mlRange[1]);
-    gl.uniform2f(this.depthU.uMlRangePrev, p.mlRangePrev[0], p.mlRangePrev[1]);
-    gl.uniform1f(this.depthU.uMlBlend, p.mlBlend);
-    gl.uniform1f(this.depthU.uAlpha, this.first ? 1 : p.alpha);
-    gl.uniform2f(this.depthU.uTexel, 1 / this.stateSize[0], 1 / this.stateSize[1]);
-    gl.uniform1i(this.depthU.uReset, this.first ? 1 : 0);
-    gl.uniform1i(this.depthU.uNewFrame, p.newFrame ? 1 : 0);
-    if (mode === MODE_INDEX.scene) {
-      if (!this.mipsFresh) {
-        gl.bindTexture(gl.TEXTURE_2D, this.videoTex);
-        gl.generateMipmap(gl.TEXTURE_2D);
-        this.mipsFresh = true;
-      }
-      this.bind(4, this.videoTex, this.depthU.uVideoMip);
-      gl.bindSampler(4, this.mipSampler);
-    }
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    gl.bindSampler(4, null);
-    this.stateIdx = 1 - this.stateIdx;
-    this.first = false;
-    if (this.capturePending) {
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, next.fbo);
-      gl.readBuffer(gl.COLOR_ATTACHMENT1);
-      gl.bindTexture(gl.TEXTURE_2D, this.mlFramePending);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, this.stateSize[0], this.stateSize[1]);
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      this.capturePending = false;
-    }
+    if (!p.freezeDepth) this.renderDepthState(p, mode);
+    const next = this.state[this.stateIdx];
 
     // Pass 2: edge-aware upsample of the depth state.
     const refined = this.refined!;
@@ -259,6 +224,50 @@ export class Renderer {
     const nearest = (p.strength / 100) * (1 - p.convergence);
     gl.uniform1f(this.stereoU.uCapDisp, p.layout === 'anaglyph' ? 0 : nearest * 1.1);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  /** Blends this frame's depth estimate into the depth state and makes it the current one. */
+  private renderDepthState(p: FrameParams, mode: number) {
+    const gl = this.gl;
+    const prev = this.state[this.stateIdx];
+    const next = this.state[1 - this.stateIdx];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, next.fbo);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+    gl.viewport(0, 0, this.stateSize[0], this.stateSize[1]);
+    gl.useProgram(this.depthProg);
+    this.bind(0, prev.tex, this.depthU.uPrev);
+    this.bind(1, this.videoTex, this.depthU.uVideo);
+    this.bind(2, this.mlTex, this.depthU.uMl);
+    this.bind(3, this.mlTexPrev, this.depthU.uMlPrev);
+    gl.uniform1i(this.depthU.uMode, mode);
+    gl.uniform2f(this.depthU.uMlRange, p.mlRange[0], p.mlRange[1]);
+    gl.uniform2f(this.depthU.uMlRangePrev, p.mlRangePrev[0], p.mlRangePrev[1]);
+    gl.uniform1f(this.depthU.uMlBlend, p.mlBlend);
+    gl.uniform1f(this.depthU.uAlpha, this.first ? 1 : p.alpha);
+    gl.uniform2f(this.depthU.uTexel, 1 / this.stateSize[0], 1 / this.stateSize[1]);
+    gl.uniform1i(this.depthU.uReset, this.first ? 1 : 0);
+    gl.uniform1i(this.depthU.uNewFrame, p.newFrame ? 1 : 0);
+    if (mode === MODE_INDEX.scene) {
+      if (!this.mipsFresh) {
+        gl.bindTexture(gl.TEXTURE_2D, this.videoTex);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        this.mipsFresh = true;
+      }
+      this.bind(4, this.videoTex, this.depthU.uVideoMip);
+      gl.bindSampler(4, this.mipSampler);
+    }
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindSampler(4, null);
+    this.stateIdx = 1 - this.stateIdx;
+    this.first = false;
+    if (this.capturePending) {
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, next.fbo);
+      gl.readBuffer(gl.COLOR_ATTACHMENT1);
+      gl.bindTexture(gl.TEXTURE_2D, this.mlFramePending);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, this.stateSize[0], this.stateSize[1]);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      this.capturePending = false;
+    }
   }
 
   dispose() {

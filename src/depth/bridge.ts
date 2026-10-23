@@ -60,6 +60,19 @@ class DepthBridge {
     return p;
   }
 
+  /** Removes the host iframe; anything still waiting gets null / false. */
+  dispose() {
+    clearTimeout(this.loadTimer);
+    this.port?.close();
+    this.iframe?.remove();
+    this.port = null;
+    this.iframe = null;
+    this.state = 'idle';
+    this.pending.forEach((r) => r(null));
+    this.pending.clear();
+    this.readyWaiters.splice(0).forEach((r) => r(false));
+  }
+
   private start() {
     this.state = 'loading';
     const iframe = document.createElement('iframe');

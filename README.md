@@ -39,12 +39,13 @@ use and are cached for offline use.
 
 ## Use
 
-1. Hover a video and click **2D**, or press **Alt+Shift+D**. **Alt+Shift+M** cycles view modes.
+1. Hover a video and click **2D-3D: Off**, or press **Alt+Shift+D**. **Alt+Shift+M** cycles view modes.
 2. Use the site's fullscreen button; 3D stays on.
 3. Set the TV's 3D mode to match. If depth looks inside-out, tick **Swap eyes**.
 
 The toolbar popup holds the rest: algorithm, view mode, strength, convergence, smoothing,
-depth-frame interpolation, ML resolution, captions, stats, and **Artifact cleanup** (edge
+depth-frame interpolation, ML resolution, captions, stats, freezing depth on pause (to
+inspect an artifact), and **Artifact cleanup** (edge
 dilation for halos, edge snapping, hole fill mode).
 
 **Dual-GPU systems:** if ML depth is slow, set the browser to **High performance** in

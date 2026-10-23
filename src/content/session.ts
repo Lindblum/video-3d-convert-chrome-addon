@@ -55,6 +55,10 @@ export class Session {
   private mlRangePrev: [number, number] = [0, 1];
   private mlArrival = -Infinity;
   private mlInterval = 80;
+  /** Depth is held as it was when the video paused (Freeze depth when paused). */
+  private frozen = false;
+  /** depthBlend() at the moment of freezing. */
+  private frozenBlend = 1;
   private started = false;
   private mlActive = false;
   /** The depth map is older than the current video frame. */
@@ -87,6 +91,10 @@ export class Session {
     this.placeCanvas();
 
     this.on(this.video, 'seeked', () => this.onDiscontinuity());
+    this.on(this.video, 'pause', () => {
+      if (this.settings.freezeOnPause) this.freeze();
+    });
+    this.on(this.video, 'play', () => this.unfreeze());
     // The Video Moutheyes extension turned on or off for this video: switch picture source.
     this.on(this.video, 'moutheyes:change', () => {
       this.placeCanvas();
@@ -125,8 +133,11 @@ export class Session {
     }
     // Keep alternating rows crisp if the browser has to scale the canvas at all.
     this.canvas.style.imageRendering = s.layout === 'interlaced' ? 'pixelated' : '';
+    const wasFreezing = this.settings.freezeOnPause;
     this.settings = s;
     this.idle = 0;
+    if (!s.freezeOnPause || modeChanged) this.unfreeze();
+    else if (!wasFreezing && this.video.paused) this.freeze();
     if (modeChanged) {
       this.mlActive = false;
       this.mlFailed = '';
@@ -215,6 +226,7 @@ export class Session {
 
   /** Seek or scene cut: the previous depth no longer matches the picture. */
   private onDiscontinuity() {
+    this.unfreeze();
     this.newFrame = true;
     this.idle = 0;
     this.shot++;
@@ -258,7 +270,7 @@ export class Session {
         this.onDiscontinuity();
       }
     }
-    if (this.mlActive && this.mlStale) this.captureForMl();
+    if (this.mlActive && this.mlStale && !this.frozen) this.captureForMl();
     if (boxChanged) this.idle = 0;
     const s = this.settings;
     const content = this.contentRect();
@@ -272,12 +284,13 @@ export class Session {
         this.idle = 0;
       }
     }
-    if (this.depthBlend() < 1) this.idle = 0;
+    if (!this.frozen && this.depthBlend() < 1) this.idle = 0;
     if (this.idle++ > IDLE_FRAMES) return;
 
     this.renderer.render({
       mode: this.mlActive ? 'ml' : this.shaderDepth,
       newFrame: frameChanged,
+      freezeDepth: this.frozen,
       layout: s.layout,
       strength: s.strength,
       convergence: s.convergence,
@@ -299,8 +312,23 @@ export class Session {
    * those steps into continuous change, at the cost of about one more interval of lag.
    */
   private depthBlend(): number {
+    if (this.frozen) return this.frozenBlend;
     if (!this.settings.interpolateDepth) return 1;
     return Math.min(1, Math.max(0, (performance.now() - this.mlArrival) / this.mlInterval));
+  }
+
+  /** Holds depth as it is now; settings changes still redraw from it. */
+  private freeze() {
+    if (this.frozen) return;
+    this.frozenBlend = this.depthBlend();
+    this.frozen = true;
+  }
+
+  private unfreeze() {
+    if (!this.frozen) return;
+    this.frozen = false;
+    this.mlStale = true; // results that finished while frozen were dropped
+    this.idle = 0;
   }
 
   /** Artifact cleanup settings for the renderer, or all of them off if the section is off. */
@@ -391,6 +419,7 @@ export class Session {
     }
     if (!result || !this.mlActive) return;
     if (shot !== this.shot) return; // captured before a cut/seek: stale
+    if (this.frozen) return; // finished after the pause: would move the frozen depth
     this.onDepth(result);
   }
 

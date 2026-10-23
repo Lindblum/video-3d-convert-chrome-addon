@@ -7,6 +7,16 @@ import { DEFAULT_SETTINGS, loadSettings, onSettingsChanged, saveSettings, type L
 import { Session } from './session';
 import { Overlay } from './ui';
 
+/**
+ * Dispatched on the document by each copy of this script as it starts. When the extension is
+ * reloaded or updated (which the browser may do on its own, e.g. after sleep), the copy
+ * already in the page keeps drawing 3D but can no longer reach the extension, so the popup
+ * can't control it. The popup then injects a fresh copy, and this event tells the stranded
+ * one to hand over: it stops, marking its videos (RESUME_KEY) for the new copy to restart.
+ */
+const TAKEOVER = 'sbs3d:takeover';
+const RESUME_KEY = 'sbs3dResume';
+
 const MIN_W = 200;
 const MIN_H = 112;
 
@@ -32,12 +42,18 @@ if (!window.__sbs3dLoaded) {
 }
 
 function main() {
+  document.dispatchEvent(new Event(TAKEOVER));
   let settings: Settings = DEFAULT_SETTINGS;
   const sessions = new Map<HTMLVideoElement, Session>();
   let overlay: Overlay | null = null;
   let hovered: HTMLVideoElement | null = null;
+  const listening = new AbortController();
+  const signal = listening.signal;
 
-  loadSettings().then((s) => (settings = s));
+  loadSettings().then((s) => {
+    settings = s;
+    sessions.forEach((sess) => sess.applySettings(s)); // resumed before the settings were in
+  });
   onSettingsChanged((s) => {
     settings = s;
     sessions.forEach((sess) => sess.applySettings(s));
@@ -78,7 +94,10 @@ function main() {
     }
     let session: Session | null = null;
     try {
-      session = new Session(video, settings, ui(), (s) => sessions.delete(s.video));
+      session = new Session(video, settings, ui(), (s) => {
+        sessions.delete(s.video);
+        overlay?.setButtonState(s.video, false);
+      });
       session.start();
     } catch (e) {
       session?.stop();
@@ -91,6 +110,7 @@ function main() {
       return false;
     }
     sessions.set(video, session);
+    overlay?.setButtonState(video, true);
     ui().toast(`3D · ${session.modeLabel}`, 3000);
     return true;
   }
@@ -114,7 +134,7 @@ function main() {
         if (hovered) ui().showButton(hovered, sessions.has(hovered));
       });
     },
-    { passive: true },
+    { passive: true, signal },
   );
 
   // Alt+Shift+D toggles 3D on the hovered (or largest) video; Alt+Shift+M switches to the
@@ -138,10 +158,10 @@ function main() {
         ui().toast(`View mode: ${name}`, 2000);
       }
     },
-    true,
+    { capture: true, signal },
   );
 
-  chrome.runtime.onMessage.addListener((msg: PopupRequest, _sender, respond: (s: PopupStatus) => void) => {
+  const onMessage = (msg: PopupRequest, _sender: chrome.runtime.MessageSender, respond: (s: PopupStatus) => void) => {
     // Only frames that actually contain a video answer, so the popup hears from the right one.
     const videos = candidates();
     if (!videos.length) return false;
@@ -152,5 +172,31 @@ function main() {
     const first = sessions.values().next().value;
     respond({ videos: videos.length, active: sessions.size, mode: first?.modeLabel ?? '', buildId: __BUILD_ID__ });
     return false;
-  });
+  };
+  chrome.runtime.onMessage.addListener(onMessage);
+
+  document.addEventListener(
+    TAKEOVER,
+    () => {
+      listening.abort();
+      try {
+        chrome.runtime.onMessage.removeListener(onMessage);
+      } catch {} // the extension context is already gone
+      for (const [video, session] of sessions) {
+        video.dataset[RESUME_KEY] = '';
+        session.stop();
+      }
+      overlay?.dispose();
+      depthBridge.dispose();
+      window.__sbs3dLoaded = false;
+    },
+    { signal },
+  );
+
+  // Restart 3D on videos a stranded copy handed over, at once so the popup sees it on.
+  for (const v of document.querySelectorAll('video')) {
+    if (!(RESUME_KEY in v.dataset)) continue;
+    delete v.dataset[RESUME_KEY];
+    toggle(v);
+  }
 }

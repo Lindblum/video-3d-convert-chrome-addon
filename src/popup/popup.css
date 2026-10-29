@@ -34,26 +34,49 @@ button:disabled {
   color: #777;
   cursor: default;
 }
+/* Options stay editable while 3D is off, but read as inactive (as in Moutheyes). */
+body.off .status ~ * {
+  opacity: 0.5;
+}
 .status {
   color: #9aa0a6;
   margin: 6px 0 10px;
   min-height: 1.4em;
 }
-h2 {
-  font-size: 13px;
-  margin: 14px 0 4px;
-  padding-top: 10px;
+/* Collapsible option sections. */
+details.section {
   border-top: 1px solid #333;
-  color: #c8c8c8;
+  padding: 8px 0 2px;
 }
-h2 {
+details.section summary {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-}
-h2 label.check {
-  margin: 0;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #c8c8c8;
   cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+details.section summary::-webkit-details-marker {
+  display: none;
+}
+details.section summary::before {
+  content: '▸';
+  color: #9aa0a6;
+  transition: transform 0.1s;
+}
+details.section[open] summary::before {
+  transform: rotate(90deg);
+}
+details.section summary label.check {
+  margin: 0;
+  flex: 1;
+  cursor: pointer;
+}
+details.section summary button {
+  margin-left: auto;
 }
 button.small {
   padding: 2px 10px;

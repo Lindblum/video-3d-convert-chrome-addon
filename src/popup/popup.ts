@@ -42,6 +42,7 @@ function showStatus(s: PopupStatus | null) {
   toggleBtn.disabled = !s;
   toggleBtn.textContent = on ? 'On' : 'Off';
   toggleBtn.classList.toggle('on', on);
+  document.body.classList.toggle('off', !on);
   statusEl.classList.toggle('warn', !!s && s.buildId !== __BUILD_ID__);
   if (!s) statusEl.textContent = 'No video found on this page. (Just reloaded the extension? Refresh this tab.)';
   else if (s.buildId !== __BUILD_ID__) statusEl.textContent = 'This tab is running an older version. Reload the extension, then refresh this tab.';
@@ -49,7 +50,19 @@ function showStatus(s: PopupStatus | null) {
   else statusEl.textContent = `${s.videos} video${s.videos > 1 ? 's' : ''} found · 2D`;
 }
 
-// The Artifact cleanup checkbox enables or greys out everything in its section.
+// Option sections remember whether they were left open or closed.
+const SECTIONS_KEY = 'popupSections';
+const sectionState = JSON.parse(localStorage.getItem(SECTIONS_KEY) ?? '{}') as Record<string, boolean>;
+for (const d of document.querySelectorAll<HTMLDetailsElement>('details.section')) {
+  const name = d.dataset.section!;
+  if (name in sectionState) d.open = sectionState[name];
+  d.addEventListener('toggle', () => {
+    sectionState[name] = d.open;
+    localStorage.setItem(SECTIONS_KEY, JSON.stringify(sectionState));
+  });
+}
+
+// The Artifact Cleanup checkbox enables or greys out everything in its section.
 const cleanup = document.getElementById('cleanup') as HTMLInputElement;
 function syncCleanupSection() {
   (document.getElementById('cleanupOptions') as HTMLFieldSetElement).disabled = !cleanup.checked;

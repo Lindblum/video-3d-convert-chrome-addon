@@ -235,26 +235,15 @@ void main() {
   outColor = vec4(d, 0.0, 0.0, 1.0);
 }`;
 
-/** Renders the stereo pair (or the depth debug view) into the visible canvas. */
-export const STEREO_FS = /* glsl */ `#version 300 es
-precision highp float;
-in vec2 vUv;
-out vec4 outColor;
-
+/**
+ * Shared by the stereo pass and the Soft hole fill's eye-view pass: what each eye sees, where
+ * the disocclusion holes are, and background-only sampling of the fill pyramid.
+ */
+const STEREO_COMMON = /* glsl */ `
 uniform sampler2D uVideo;
 uniform sampler2D uDepth;
-uniform int uLayout;      // 0 = half SBS, 1 = half top-over-bottom, 2 = depth map, 3 = anaglyph,
-                          // 4 = row-interlaced (top row = left eye), 5 = 2D + depth side by side
-uniform float uHeight;    // canvas height in pixels
 uniform float uStrength;  // max near/far disparity, in fractions of video width
 uniform float uConv;      // depth placed at screen plane
-uniform bool uSwap;
-uniform vec4 uContent;    // video content rect within an eye view (x, y, w, h), top-left origin
-uniform sampler2D uCaptions; // premultiplied caption layer, same uv space as the video
-uniform bool uCapOn;
-uniform float uCapDisp;   // caption disparity, same units as uStrength
-uniform int uHoleFill;    // 0 = off (stretch edge), 1 = sharp, 2 = soft, 3 = mirror
-uniform float uFillMargin; // how far past the edge to start sampling background (uv)
 uniform float uDepthTexelX; // 1 / width of the depth map
 
 const int STEPS = 24;
@@ -339,12 +328,69 @@ float rampEndX(vec2 uv, float srcX, float away) {
   return best;
 }
 
+// The color one eye sees at video uv before hole filling, the source position it comes from,
+// and how much of a disocclusion hole that is (0..1).
+vec3 eyeRaw(vec2 uv, float eye, out float srcX, out float hole) {
+  float s = eyeShift(eye);
+  srcX = uv.x - s * searchHit(uv, s);
+  hole = smoothstep(HOLE_LO, HOLE_HI, magnification(uv, srcX, s));
+  return texture(uVideo, vec2(srcX, uv.y)).rgb;
+}
+
+// Texels nearer than the farthest of their neighbors by more than this are left out of fills.
+const float BG_MARGIN = 0.05;
+
+// Bilinear sample of a fill-pyramid level (rgb, a = depth; a < 0: no data) that uses only
+// the farthest of the four texels around uv (within BG_MARGIN), so a hole beside an object
+// is filled from the background, never from the object. Returns a < 0 if all four are empty.
+vec4 backgroundSample(sampler2D tex, vec2 uv) {
+  ivec2 size = textureSize(tex, 0);
+  vec2 p = uv * vec2(size) - 0.5;
+  vec2 b = floor(p);
+  vec2 f = p - b;
+  vec4 t[4];
+  float dMin = 1e9;
+  for (int k = 0; k < 4; k++) {
+    t[k] = texelFetch(tex, clamp(ivec2(b) + ivec2(k & 1, k >> 1), ivec2(0), size - 1), 0);
+    if (t[k].a >= 0.0) dMin = min(dMin, t[k].a);
+  }
+  vec4 sum = vec4(0.0);
+  float wSum = 0.0;
+  for (int k = 0; k < 4; k++) {
+    if (t[k].a < 0.0 || t[k].a > dMin + BG_MARGIN) continue;
+    float w = ((k & 1) == 1 ? f.x : 1.0 - f.x) * ((k >> 1) == 1 ? f.y : 1.0 - f.y) + 1e-4;
+    sum += w * t[k];
+    wSum += w;
+  }
+  return wSum > 0.0 ? sum / wSum : vec4(0.0, 0.0, 0.0, -1.0);
+}
+`;
+
+/** Renders the stereo pair (or the depth debug view) into the visible canvas. */
+export const STEREO_FS = /* glsl */ `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+${STEREO_COMMON}
+uniform int uLayout;      // 0 = half SBS, 1 = half top-over-bottom, 2 = depth map, 3 = anaglyph,
+                          // 4 = row-interlaced (top row = left eye), 5 = 2D + depth side by side
+uniform float uHeight;    // canvas height in pixels
+uniform bool uSwap;
+uniform vec4 uContent;    // video content rect within an eye view (x, y, w, h), top-left origin
+uniform sampler2D uCaptions; // premultiplied caption layer, same uv space as the video
+uniform bool uCapOn;
+uniform float uCapDisp;   // caption disparity, same units as uStrength
+uniform int uHoleFill;    // 0 = off (stretch edge), 1 = sharp, 2 = soft, 3 = mirror
+uniform float uFillMargin; // how far past the edge to start sampling background (uv)
+uniform bool uFillTex;    // soft fill comes from the filled eye views below (FILL_PULL/PUSH_FS)
+uniform sampler2D uFillL; // filled eye views (rgb, a = depth), for eye = +1 and -1
+uniform sampler2D uFillR;
+
 // The color one eye sees at video uv (before captions).
 vec3 eyeColor(vec2 uv, float eye) {
   float s = eyeShift(eye);
-  float srcX = uv.x - s * searchHit(uv, s);
-  vec3 color = texture(uVideo, vec2(srcX, uv.y)).rgb;
-  float hole = smoothstep(HOLE_LO, HOLE_HI, magnification(uv, srcX, s));
+  float srcX, hole;
+  vec3 color = eyeRaw(uv, eye, srcX, hole);
   if (hole > 0.0) {
     float away = -sign(s);
     float endX = rampEndX(uv, srcX, away);
@@ -366,8 +412,12 @@ vec3 eyeColor(vec2 uv, float eye) {
       fill = texture(uVideo, vec2(clamp(bgX + away * abs(uv.x - xFar), 0.0, 1.0), uv.y)).rgb;
     } else if (uHoleFill == 1) {
       fill = texture(uVideo, vec2(bgX, uv.y)).rgb;
+    } else if (uFillTex) {
+      // Soft: the surrounding background, spread smoothly into the hole by the fill pyramid.
+      vec4 bg = eye > 0.0 ? backgroundSample(uFillL, uv) : backgroundSample(uFillR, uv);
+      fill = bg.a >= 0.0 ? bg.rgb : color;
     } else {
-      // Soft mode spreads samples so the fill doesn't streak as much.
+      // Without float render targets: average a few samples past the edge.
       fill = vec3(0.0);
       for (int i = 0; i < 4; i++) {
         float fi = float(i);
@@ -419,4 +469,64 @@ void main() {
   }
   else if (uLayout == 5) outColor = vec4(eye > 0.0 ? texture(uVideo, uv).rgb : vec3(depthAt(uv)), 1.0);
   else outColor = vec4(withCaptions(eyeColor(uv, eye), uv, eye), 1.0);
+}`;
+
+/*
+ * Soft hole fill, a background-only push-pull: each eye's view is rendered with its holes
+ * marked empty, shrunk level by level keeping only the farthest texels (pull), then grown
+ * back, filling each empty texel from the next coarser level (push). Holes come out as a
+ * smooth continuation of the background around them, with no streaks and no object color.
+ */
+
+/** One eye's view before hole filling: rgb, a = depth there, or -1 where it's a hole. */
+export const FILL_EYE_FS = /* glsl */ `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+${STEREO_COMMON}
+uniform float uEye;
+
+void main() {
+  float srcX, hole;
+  vec3 color = eyeRaw(vUv, uEye, srcX, hole);
+  outColor = vec4(color, hole < 0.5 ? depthAt(vec2(srcX, vUv.y)) : -1.0);
+}`;
+
+/** Pull: halves a level, averaging the farthest of each 2x2 block's non-empty texels. */
+export const FILL_PULL_FS = /* glsl */ `#version 300 es
+precision highp float;
+out vec4 outColor;
+uniform sampler2D uSrc;
+const float BG_MARGIN = 0.05; // as in STEREO_COMMON
+
+void main() {
+  ivec2 size = textureSize(uSrc, 0);
+  ivec2 base = ivec2(gl_FragCoord.xy) * 2;
+  vec4 t[4];
+  float dMin = 1e9;
+  for (int k = 0; k < 4; k++) {
+    t[k] = texelFetch(uSrc, min(base + ivec2(k & 1, k >> 1), size - 1), 0);
+    if (t[k].a >= 0.0) dMin = min(dMin, t[k].a);
+  }
+  vec4 sum = vec4(0.0);
+  float n = 0.0;
+  for (int k = 0; k < 4; k++) {
+    if (t[k].a < 0.0 || t[k].a > dMin + BG_MARGIN) continue;
+    sum += t[k];
+    n += 1.0;
+  }
+  outColor = n > 0.0 ? sum / n : vec4(0.0, 0.0, 0.0, -1.0);
+}`;
+
+/** Push: keeps a level's own texels and fills its empty ones from the coarser, filled level. */
+export const FILL_PUSH_FS = /* glsl */ `#version 300 es
+precision highp float;
+out vec4 outColor;
+${STEREO_COMMON}
+uniform sampler2D uLevel;
+uniform sampler2D uCoarse;
+
+void main() {
+  vec4 own = texelFetch(uLevel, ivec2(gl_FragCoord.xy), 0);
+  outColor = own.a >= 0.0 ? own : backgroundSample(uCoarse, gl_FragCoord.xy / vec2(textureSize(uLevel, 0)));
 }`;

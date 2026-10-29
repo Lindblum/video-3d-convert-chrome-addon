@@ -1,4 +1,4 @@
-import { DEPTH_FS, DILATE_FS, FULLSCREEN_VS, REFINE_FS, STEREO_FS } from './shaders';
+import { DEPTH_FS, DILATE_FS, FILL_EYE_FS, FILL_PULL_FS, FILL_PUSH_FS, FULLSCREEN_VS, REFINE_FS, STEREO_FS } from './shaders';
 import type { HoleFill, Layout, ShaderDepth } from '../shared/settings';
 
 export interface FrameParams {
@@ -42,8 +42,21 @@ const DEPTH_STATE_WIDTH = 384;
 const REFINED_MAX_WIDTH = 1280;
 
 type Uniforms = Record<string, WebGLUniformLocation | null>;
+type Target = { tex: WebGLTexture; fbo: WebGLFramebuffer };
+
+/** Layouts that show stereo views, so they can have holes to fill. */
+const STEREO_LAYOUTS = new Set<Layout>(['hsbs', 'htab', 'anaglyph', 'interlaced']);
 
 export class TaintedVideoError extends Error {}
+
+/** Why the browser won't let us read this video's pixels, for the toast. */
+export function taintedVideoMessage(video: HTMLVideoElement): string {
+  if (video.mediaKeys) return "This video is DRM-protected, so the browser won't let the extension read its pixels.";
+  if (location.protocol === 'file:') {
+    return "The browser won't let extensions read the pixels of a video opened from a local file. Serve the page over http instead (e.g. npx http-server).";
+  }
+  return "This video is protected (cross-origin or DRM), so the browser won't let the extension read its pixels.";
+}
 
 export class Renderer {
   private gl: WebGL2RenderingContext;
@@ -55,6 +68,20 @@ export class Renderer {
   private refineU: Uniforms;
   private dilateU: Uniforms;
   private stereoU: Uniforms;
+  private fillEyeProg: WebGLProgram;
+  private fillPullProg: WebGLProgram;
+  private fillPushProg: WebGLProgram;
+  private fillEyeU: Uniforms;
+  private fillPullU: Uniforms;
+  private fillPushU: Uniforms;
+  /**
+   * Soft hole fill pyramid (float targets only): [0] is an eye's view at half the refined
+   * depth resolution, each next level half the size, down to 1 texel. fillPushed[l] is level
+   * l filled from the coarser ones (l >= 1); fillOut holds the filled views of both eyes.
+   */
+  private fillLevels: Target[] = [];
+  private fillPushed: Target[] = [];
+  private fillOut: Target[] = [];
   private videoTex: WebGLTexture;
   /** Samples videoTex through its mipmaps (scene cues); other passes keep plain bilinear. */
   private mipSampler: WebGLSampler;
@@ -84,6 +111,7 @@ export class Renderer {
   /** Horizontal half of the separable dilation. */
   private dilateTemp: { tex: WebGLTexture; fbo: WebGLFramebuffer } | null = null;
   private refinedSize = [0, 0];
+  private fillSizes: [number, number][] = [];
   private floatTargets: boolean;
   private hasVideo = false;
   private hasMl = false;
@@ -98,10 +126,16 @@ export class Renderer {
     this.refineProg = this.program(FULLSCREEN_VS, REFINE_FS);
     this.dilateProg = this.program(FULLSCREEN_VS, DILATE_FS);
     this.stereoProg = this.program(FULLSCREEN_VS, STEREO_FS);
+    this.fillEyeProg = this.program(FULLSCREEN_VS, FILL_EYE_FS);
+    this.fillPullProg = this.program(FULLSCREEN_VS, FILL_PULL_FS);
+    this.fillPushProg = this.program(FULLSCREEN_VS, FILL_PUSH_FS);
     this.depthU = this.uniforms(this.depthProg, ['uPrev', 'uVideo', 'uMl', 'uMlPrev', 'uMode', 'uMlRange', 'uMlRangePrev', 'uMlBlend', 'uAlpha', 'uTexel', 'uReset', 'uNewFrame', 'uVideoMip']);
     this.refineU = this.uniforms(this.refineProg, ['uState', 'uGuide', 'uVideo', 'uLowSize', 'uSnap']);
     this.dilateU = this.uniforms(this.dilateProg, ['uDepth', 'uStep', 'uRadius']);
-    this.stereoU = this.uniforms(this.stereoProg, ['uVideo', 'uDepth', 'uLayout', 'uStrength', 'uConv', 'uSwap', 'uContent', 'uCaptions', 'uCapOn', 'uCapDisp', 'uHeight', 'uHoleFill', 'uFillMargin', 'uDepthTexelX']);
+    this.stereoU = this.uniforms(this.stereoProg, ['uVideo', 'uDepth', 'uLayout', 'uStrength', 'uConv', 'uSwap', 'uContent', 'uCaptions', 'uCapOn', 'uCapDisp', 'uHeight', 'uHoleFill', 'uFillMargin', 'uDepthTexelX', 'uFillTex', 'uFillL', 'uFillR']);
+    this.fillEyeU = this.uniforms(this.fillEyeProg, ['uVideo', 'uDepth', 'uStrength', 'uConv', 'uDepthTexelX', 'uEye']);
+    this.fillPullU = this.uniforms(this.fillPullProg, ['uSrc']);
+    this.fillPushU = this.uniforms(this.fillPushProg, ['uLevel', 'uCoarse']);
     this.videoTex = this.texture();
     this.mipSampler = gl.createSampler()!;
     gl.samplerParameteri(this.mipSampler, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
@@ -202,6 +236,9 @@ export class Renderer {
       depthTex = this.dilated!.tex;
     }
 
+    const fillTex = p.holeFill === 'soft' && this.fillOut.length > 0 && STEREO_LAYOUTS.has(p.layout);
+    if (fillTex) this.renderFill(p, depthTex);
+
     // Pass 4: stereo composite to the canvas.
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
@@ -211,6 +248,11 @@ export class Renderer {
     gl.uniform1i(this.stereoU.uHoleFill, HOLE_FILL_INDEX[p.holeFill]);
     gl.uniform1f(this.stereoU.uFillMargin, (p.edgeDilation + 1.5) / this.refinedSize[0]);
     gl.uniform1f(this.stereoU.uDepthTexelX, 1 / this.refinedSize[0]);
+    gl.uniform1i(this.stereoU.uFillTex, fillTex ? 1 : 0);
+    if (fillTex) {
+      this.bind(3, this.fillOut[0].tex, this.stereoU.uFillL);
+      this.bind(4, this.fillOut[1].tex, this.stereoU.uFillR);
+    }
     gl.uniform1i(this.stereoU.uLayout, LAYOUT_INDEX[p.layout]);
     gl.uniform1f(this.stereoU.uStrength, p.strength / 100);
     gl.uniform1f(this.stereoU.uConv, p.convergence);
@@ -224,6 +266,43 @@ export class Renderer {
     const nearest = (p.strength / 100) * (1 - p.convergence);
     gl.uniform1f(this.stereoU.uCapDisp, p.layout === 'anaglyph' ? 0 : nearest * 1.1);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  /** Soft hole fill: renders each eye's view with holes marked, then pulls and pushes it. */
+  private renderFill(p: FrameParams, depthTex: WebGLTexture) {
+    const gl = this.gl;
+    const levels = this.fillLevels;
+    const n = levels.length - 1;
+    const draw = (t: Target, size: [number, number]) => {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+      gl.viewport(0, 0, size[0], size[1]);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    };
+    const sizes = this.fillSizes;
+    for (const [i, eye] of [[0, 1], [1, -1]]) {
+      gl.useProgram(this.fillEyeProg);
+      this.bind(0, this.videoTex, this.fillEyeU.uVideo);
+      this.bind(1, depthTex, this.fillEyeU.uDepth);
+      gl.uniform1f(this.fillEyeU.uStrength, p.strength / 100);
+      gl.uniform1f(this.fillEyeU.uConv, p.convergence);
+      gl.uniform1f(this.fillEyeU.uDepthTexelX, 1 / this.refinedSize[0]);
+      gl.uniform1f(this.fillEyeU.uEye, eye);
+      draw(levels[0], sizes[0]);
+      gl.useProgram(this.fillPullProg);
+      for (let l = 1; l <= n; l++) {
+        this.bind(0, levels[l - 1].tex, this.fillPullU.uSrc);
+        draw(levels[l], sizes[l]);
+      }
+      gl.useProgram(this.fillPushProg);
+      let coarse = levels[n];
+      for (let l = n - 1; l >= 0; l--) {
+        const dst = l === 0 ? this.fillOut[i] : this.fillPushed[l];
+        this.bind(0, levels[l].tex, this.fillPushU.uLevel);
+        this.bind(1, coarse.tex, this.fillPushU.uCoarse);
+        draw(dst, sizes[l]);
+        coarse = dst;
+      }
+    }
   }
 
   /** Blends this frame's depth estimate into the depth state and makes it the current one. */
@@ -288,6 +367,10 @@ export class Renderer {
       gl.deleteFramebuffer(t.fbo);
     }
     for (const t of [this.guideTex, this.mlFrame, this.mlFramePrev, this.mlFramePending]) if (t) gl.deleteTexture(t);
+    for (const t of [...this.fillLevels, ...this.fillPushed.filter(Boolean), ...this.fillOut]) {
+      gl.deleteTexture(t.tex);
+      gl.deleteFramebuffer(t.fbo);
+    }
 
     const alloc = (tw: number, th: number, internal: number, format: number, type: number) => {
       const tex = this.texture();
@@ -315,6 +398,27 @@ export class Renderer {
     this.refined = target();
     this.dilated = target();
     this.dilateTemp = target();
+    // Soft hole fill pyramid. Needs float targets: depth goes in alpha, with -1 for holes.
+    this.fillSizes = [];
+    if (f) {
+      let size: [number, number] = [Math.ceil(rw / 2), Math.ceil(rh / 2)];
+      for (;;) {
+        this.fillSizes.push(size);
+        if (size[0] === 1 && size[1] === 1) break;
+        size = [Math.ceil(size[0] / 2), Math.ceil(size[1] / 2)];
+      }
+    }
+    const fillTarget = ([tw, th]: [number, number]): Target => {
+      const tex = alloc(tw, th, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT);
+      const fbo = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      return { tex, fbo };
+    };
+    this.fillLevels = this.fillSizes.map(fillTarget);
+    // [0] is unused: level 0's filled result goes to fillOut, one per eye.
+    this.fillPushed = this.fillSizes.map((sz, l) => (l === 0 ? null! : fillTarget(sz)));
+    this.fillOut = f ? [fillTarget(this.fillSizes[0]), fillTarget(this.fillSizes[0])] : [];
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.stateSize = [w, h];
     this.refinedSize = [rw, rh];

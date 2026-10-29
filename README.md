@@ -45,8 +45,10 @@ use and are cached for offline use.
 
 The toolbar popup holds the rest: algorithm, view mode, strength, convergence, smoothing,
 depth-frame interpolation, ML resolution, captions, stats, freezing depth on pause (to
-inspect an artifact), and **Artifact cleanup** (edge
-dilation for halos, edge snapping, hole fill mode).
+inspect an artifact), and **Artifact Cleanup** (edge
+dilation for halos, edge snapping, hole fill mode). Soft hole fill spreads the surrounding
+background into each gap through an image pyramid, so it neither streaks nor picks up the
+object's color.
 
 **Dual-GPU systems:** if ML depth is slow, set the browser to **High performance** in
 Windows Settings → System → Display → Graphics, or launch it with `--force-high-performance-gpu`.

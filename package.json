@@ -9,6 +9,7 @@
     "watch": "node build.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test-page": "npx --yes http-server test -p 8080 -c-1",
+    "test-page": "npx --yes http-server test -p 8080 -c-1",
     "fetch-test-media": "node scripts/fetch-test-media.mjs",
     "e2e": "node scripts/e2e.mjs",
     "frame": "node scripts/frame.mjs",

@@ -1,7 +1,7 @@
 // Content script entry: finds videos, wires the hover button, keyboard shortcuts and popup
 // messages, and manages one Session per converted video.
 import { depthBridge } from '../depth/bridge';
-import { TaintedVideoError } from '../render/renderer';
+import { TaintedVideoError, taintedVideoMessage } from '../render/renderer';
 import type { PopupRequest, PopupStatus } from '../shared/protocol';
 import { DEFAULT_SETTINGS, loadSettings, onSettingsChanged, saveSettings, type Layout, type Settings } from '../shared/settings';
 import { Session } from './session';
@@ -102,7 +102,7 @@ function main() {
     } catch (e) {
       session?.stop();
       if (e instanceof TaintedVideoError) {
-        ui().toast("This video is protected (DRM), so the browser won't let the extension read its pixels.", 7000);
+        ui().toast(taintedVideoMessage(video), 7000);
       } else {
         ui().toast(`3D failed to start: ${e instanceof Error ? e.message : e}`, 7000);
         console.error('[2D-3D]', e);

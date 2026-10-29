@@ -1,11 +1,11 @@
 // One active 2D→3D conversion: an overlay canvas over a <video>, its render loop and its
 // share of the depth model.
 import { depthBridge, type DepthResult } from '../depth/bridge';
-import { Renderer, TaintedVideoError } from '../render/renderer';
+import { Renderer, TaintedVideoError, taintedVideoMessage } from '../render/renderer';
 import { mlModel, type Algorithm, type Settings, type ShaderDepth } from '../shared/settings';
 import { Captions } from './captions';
 import { DepthChangeDetector } from './depthchange';
-import { SceneCutDetector } from './scenecut';
+import { changedShare, SceneCutDetector, Thumbnailer } from './scenecut';
 import type { Overlay } from './ui';
 
 const SHADER_LABELS: Record<ShaderDepth, string> = {
@@ -17,6 +17,19 @@ const SHADER_LABELS: Record<ShaderDepth, string> = {
 
 /** Auto mode gives up on ML depth if inference is slower than this (ms, averaged). */
 const AUTO_MAX_INFER_MS = 150;
+/**
+ * Other extensions whose output for a video can be this one's picture, last pipeline stage
+ * first: 2D-3D always comes last, converting whatever the others made of the picture. Each
+ * stage, while it's on, sets data-<stage>="<canvas id>" on the video and fires "<stage>:change"
+ * when that turns on or off and "<stage>:frame" after every new frame. Its canvas holds the
+ * whole picture (no letterbox; CSS object-fit letterboxes it like the video), and is readable
+ * from other WebGL contexts (preserveDrawingBuffer). Video Filters reads Video Moutheyes.
+ */
+const PIPELINE: Array<{ stage: string; key: string; overlay: string }> = [
+  { stage: 'video-filters', key: 'videoFilters', overlay: 'vfx-canvas' },
+  { stage: 'moutheyes', key: 'moutheyes', overlay: 'moutheyes-canvas' },
+];
+
 /** Stop redrawing a paused video after this many frames without changes. */
 const IDLE_FRAMES = 90;
 const ML_WARMUP_RUNS = 3;
@@ -24,10 +37,20 @@ const ML_MAX_LONG_SIDE = 518;
 const PATCH = 14; // Depth Anything works on 14px patches
 /**
  * Change between consecutive ML depth maps (0..1) big enough to snap to the new depth
- * instead of blending into it. Measured: at most 0.021 in calm footage; 0.07-0.44 at cuts;
- * up to 0.37 in fast action, where following immediately is also what looks right.
+ * instead of blending into it, if the picture changed like a cut too (DEPTH_JUMP_SHARE).
+ * Measured: at most 0.021 in calm footage; 0.07-0.44 at cuts; up to 0.37 in fast action.
  */
 const DEPTH_JUMP = 0.06;
+/**
+ * Share of the picture (changedShare) that must have changed between the frames of two depth
+ * maps for a depth jump to snap. Mid-shot, the model is unsteady enough that depth alone
+ * can't tell: on four trailers (Carrie, Mad Max, John Wick 4, test/media/cuts.mp4) depth jumps
+ * more than 1 s from any cut measured a median 0.12 (90th percentile 0.32), as big as at cuts.
+ * The picture tells them apart: median share 0.61 at cuts (90% above 0.42), 0.13 mid-shot.
+ * 0.25 keeps the same-scene cuts in cuts.mp4 (0.26, 0.29) and stops 82% of mid-shot snaps,
+ * which in dark handheld scenes (Carrie's party) came several times a second.
+ */
+const DEPTH_JUMP_SHARE = 0.25;
 /**
  * How fast the depth normalization range follows each new depth map when not snapping.
  * Measured within shots: median 1-2% change per update. Slow adaptation (0.15) made any
@@ -41,6 +64,9 @@ export class Session {
   private captions: Captions;
   private cuts = new SceneCutDetector();
   private depthChange = new DepthChangeDetector();
+  /** Thumbnails of the frames sent to the depth model, and of the newest one with depth. */
+  private thumbs = new Thumbnailer();
+  private depthThumb: Float32Array | null = null;
   /** Bumped on every seek or scene cut; depth computed from older frames is discarded. */
   private shot = 0;
   private raf = 0;
@@ -95,15 +121,17 @@ export class Session {
       if (this.settings.freezeOnPause) this.freeze();
     });
     this.on(this.video, 'play', () => this.unfreeze());
-    // The Video Moutheyes extension turned on or off for this video: switch picture source.
-    this.on(this.video, 'moutheyes:change', () => {
-      this.placeCanvas();
-      this.newFrame = true;
-      this.idle = 0;
-    });
-    this.on(this.video, 'moutheyes:frame', () => {
-      if (this.source !== this.video) this.newFrame = true;
-    });
+    for (const { stage } of PIPELINE) {
+      // Another extension turned on or off for this video: switch picture source.
+      this.on(this.video, `${stage}:change`, () => {
+        this.placeCanvas();
+        this.newFrame = true;
+        this.idle = 0;
+      });
+      this.on(this.video, `${stage}:frame`, () => {
+        if (this.source !== this.video) this.newFrame = true;
+      });
+    }
     this.on(this.video, 'emptied', () => {
       this.cuts.reset();
       this.onDiscontinuity();
@@ -194,21 +222,27 @@ export class Session {
     this.listeners.push(() => target.removeEventListener(type, fn));
   }
 
-  /**
-   * Where the picture comes from: the video, or the Video Moutheyes extension's output for it
-   * while that's on (a canvas with the same frame, letterboxed like the video; see
-   * data-moutheyes in that extension's session.ts).
-   */
+  /** Where the picture comes from: the last PIPELINE stage that's on for this video, else the video. */
   private get source(): HTMLVideoElement | HTMLCanvasElement {
-    const id = this.video.dataset.moutheyes;
-    const el = id ? document.getElementById(id) : null;
-    return el instanceof HTMLCanvasElement && el.isConnected && el.width > 2 ? el : this.video;
+    for (const { key } of PIPELINE) {
+      const id = this.video.dataset[key];
+      const el = id ? document.getElementById(id) : null;
+      if (el instanceof HTMLCanvasElement && el.isConnected && el.width > 2) return el;
+    }
+    return this.video;
   }
 
-  /** Keeps the 3D canvas directly above the picture source, so it covers a moutheyes canvas too. */
+  /**
+   * Keeps the 3D canvas above the picture source and every other stage's overlay after it
+   * (same z-index, so the later sibling is on top): 3D always shows last.
+   */
   private placeCanvas() {
-    const src = this.source;
-    if (src.nextElementSibling !== this.canvas) src.insertAdjacentElement('afterend', this.canvas);
+    let after: Element = this.source;
+    const overlays = PIPELINE.map((p) => p.overlay);
+    for (let el = after.nextElementSibling; el; el = el.nextElementSibling) {
+      if (el !== this.canvas && overlays.some((c) => el.classList.contains(c))) after = el;
+    }
+    if (after.nextElementSibling !== this.canvas) after.insertAdjacentElement('afterend', this.canvas);
   }
 
   private watchFrames() {
@@ -216,7 +250,7 @@ export class Session {
     if (!('requestVideoFrameCallback' in v)) return; // fall back to uploading every tick
     let handle = 0;
     const cb = () => {
-      // A moutheyes source announces its own frames, a little after the video's.
+      // Another stage's output announces its own frames, a little after the video's.
       if (this.source === v) this.newFrame = true;
       handle = v.requestVideoFrameCallback(cb);
     };
@@ -247,6 +281,7 @@ export class Session {
     if (!v.isConnected) return this.stop();
     if (v.readyState < 2 || !v.videoWidth) return;
 
+    this.placeCanvas(); // another stage may have put its overlay on top since
     const boxChanged = this.layout();
     const src = this.source;
     const hasRvfc = 'requestVideoFrameCallback' in v;
@@ -256,7 +291,7 @@ export class Session {
         this.renderer.uploadVideo(src);
       } catch (e) {
         if (e instanceof TaintedVideoError) {
-          this.overlay.toast("This video is protected (DRM or cross-origin), so the browser won't let the extension read its pixels.", 7000);
+          this.overlay.toast(taintedVideoMessage(this.video), 7000);
           return this.stop();
         }
         throw e;
@@ -409,8 +444,10 @@ export class Session {
     this.renderer.markMlCapture(); // copied when this tick renders, the same frame as the bitmap
     const shot = this.shot;
     let result: DepthResult | null = null;
+    let thumb: Float32Array | null = null;
     try {
       const bitmap = await createImageBitmap(this.source, { resizeWidth: w, resizeHeight: h, resizeQuality: 'low' });
+      thumb = this.thumbs.take(bitmap); // before infer() hands the bitmap over
       result = await depthBridge.infer(bitmap);
     } catch (e) {
       console.warn('[2D-3D] frame capture failed:', e);
@@ -420,22 +457,37 @@ export class Session {
     if (!result || !this.mlActive) return;
     if (shot !== this.shot) return; // captured before a cut/seek: stale
     if (this.frozen) return; // finished after the pause: would move the frozen depth
-    this.onDepth(result);
+    this.onDepth(result, thumb);
   }
 
-  private onDepth(r: DepthResult) {
+  /** thumb: a thumbnail of the frame the depth was computed from. */
+  private onDepth(r: DepthResult, thumb: Float32Array | null) {
     this.renderer.uploadMlDepth(r.data, r.width, r.height);
     const now = performance.now();
     const since = now - this.mlArrival;
     if (since < 500) this.mlInterval = Math.min(250, Math.max(30, this.mlInterval * 0.8 + since * 0.2));
     this.mlArrival = now;
     this.mlRangePrev = this.mlRange ?? [r.min, r.max];
-    // A drastic change in the depth layout (a cut the color detector missed, or violent
-    // motion): snap to the new depth instead of blending into it.
-    const jumped = this.depthChange.measure(r.data, r.min, r.max) > DEPTH_JUMP;
+    // A drastic change in the depth layout where most of the picture changed too: a cut the
+    // color detector missed. Snap to the new depth instead of blending into it. (A depth jump
+    // alone is mostly motion or an unsteady model, where snapping reads as the depth jerking.)
+    const depthChange = this.depthChange.measure(r.data, r.min, r.max);
+    const share = this.depthThumb && thumb ? changedShare(this.depthThumb, thumb) : 1;
+    const depthJumped = depthChange > DEPTH_JUMP;
+    if (depthJumped) {
+      // For tuning DEPTH_JUMP_SHARE: "videoTime:depthChange:share:colorCutPending" per jump.
+      const log = (this.canvas.dataset.jumpLog ?? '').split(' ').filter(Boolean);
+      log.push(`${this.video.currentTime.toFixed(2)}:${depthChange.toFixed(3)}:${share.toFixed(2)}:${this.resetOnNextDepth ? 1 : 0}`);
+      this.canvas.dataset.jumpLog = log.slice(-400).join(' ');
+    }
+    const pictureChanged = share > DEPTH_JUMP_SHARE;
+    this.depthThumb = thumb;
+    const jumped = depthJumped && pictureChanged;
     if (jumped) {
       this.canvas.dataset.depthJumps = String(Number(this.canvas.dataset.depthJumps ?? 0) + 1);
       this.logShotEvent('depth');
+    } else if (depthJumped) {
+      this.logShotEvent('held');
     }
     const reset = this.resetOnNextDepth || jumped || !this.mlRange;
     if (reset && this.resetOnNextDepth) this.logShotEvent('snap');
@@ -463,8 +515,11 @@ export class Session {
     }
   }
 
-  /** Recent shot-change detections ("kind@videoTime"), exposed for debugging and tests. */
-  private logShotEvent(kind: 'cut' | 'depth' | 'snap') {
+  /**
+   * Recent shot-change detections ("kind@videoTime"), exposed for debugging and tests. held: a
+   * depth jump that didn't snap, because the picture didn't change like a cut.
+   */
+  private logShotEvent(kind: 'cut' | 'depth' | 'held' | 'snap') {
     const log = (this.canvas.dataset.shotLog ?? '').split(' ').filter(Boolean);
     log.push(`${kind}@${this.video.currentTime.toFixed(2)}`);
     this.canvas.dataset.shotLog = log.slice(-300).join(" ");

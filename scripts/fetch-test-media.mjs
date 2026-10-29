@@ -1,5 +1,5 @@
-// Downloads test media: a 10 s Big Buck Bunny clip and the Sintel trailer (both CC-BY
-// Blender Foundation), and (if ffmpeg is installed) splices the clip into cuts.mp4, a 6 s
+// Downloads test media: a 10 s Big Buck Bunny clip, the Sintel trailer and a minute of
+// Tears of Steel (all CC-BY Blender Foundation), and (if ffmpeg is installed) splices the clip into cuts.mp4, a 6 s
 // clip with hard cuts at 2 s and 4 s.
 import { execFileSync } from 'node:child_process';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
@@ -30,6 +30,23 @@ if (await exists(SINTEL)) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   await writeFile(SINTEL, Buffer.from(await res.arrayBuffer()));
   console.log(`Saved ${SINTEL}`);
+}
+
+// Tears of Steel (CC-BY Blender Foundation): a live-action minute (actors, VFX, fast action,
+// baked-in letterbox). ffmpeg seeks within the 372 MB film over HTTP, so only this part downloads.
+const TOS = 'test/media/tos-action.mp4';
+if (await exists(TOS)) {
+  console.log(`${TOS} already present`);
+} else {
+  try {
+    execFileSync('ffmpeg', ['-v', 'error', '-y', '-ss', '450', '-t', '60',
+      '-i', 'https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov',
+      '-c:v', 'libx264', '-crf', '20', '-preset', 'fast', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+      '-movflags', '+faststart', TOS], { stdio: 'inherit' });
+    console.log(`Saved ${TOS}`);
+  } catch {
+    console.warn(`ffmpeg not found: skipping ${TOS}`);
+  }
 }
 
 if (await exists(CUTS)) {

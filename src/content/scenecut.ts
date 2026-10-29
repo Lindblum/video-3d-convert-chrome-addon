@@ -29,14 +29,53 @@ const MAX_GAP_MS = 250;
  * frames were skipped): several frames' worth of motion would look like a cut.
  */
 const MAX_MEDIA_GAP_S = 0.1;
+/** A thumbnail cell changed if its luma moved by more than this (0..1). */
+const CELL_CHANGE = 0.08;
 
-export class SceneCutDetector {
+/** Tiny luma thumbnails (W x H, 0..1) of frames, for comparing them. */
+export class Thumbnailer {
   private canvas = new OffscreenCanvas(W * SS, H * SS);
   private ctx = this.canvas.getContext('2d', { willReadFrequently: true })!;
 
   constructor() {
     this.ctx.imageSmoothingQuality = 'high';
   }
+
+  /** null if the picture can't be read. */
+  take(source: CanvasImageSource): Float32Array | null {
+    let px: Uint8ClampedArray;
+    try {
+      this.ctx.drawImage(source, 0, 0, W * SS, H * SS);
+      px = this.ctx.getImageData(0, 0, W * SS, H * SS).data;
+    } catch {
+      return null;
+    }
+    const luma = new Float32Array(W * H);
+    const rowLen = W * SS;
+    for (let y = 0; y < H * SS; y++) {
+      for (let x = 0; x < rowLen; x++) {
+        const i = (y * rowLen + x) * 4;
+        luma[((y / SS) | 0) * W + ((x / SS) | 0)] += px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114;
+      }
+    }
+    for (let i = 0; i < luma.length; i++) luma[i] /= 255 * SS * SS;
+    return luma;
+  }
+}
+
+/**
+ * Share (0..1) of two thumbnails' cells that changed a lot. A cut changes most of the
+ * picture; motion within a shot, even someone passing right in front of the camera, mostly
+ * changes part of it.
+ */
+export function changedShare(a: Float32Array, b: Float32Array): number {
+  let n = 0;
+  for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > CELL_CHANGE) n++;
+  return n / a.length;
+}
+
+export class SceneCutDetector {
+  private thumbs = new Thumbnailer();
   private prev: Float32Array | null = null;
   /** Frame-to-frame changes of the last few checks. */
   private recent: number[] = [];
@@ -50,22 +89,8 @@ export class SceneCutDetector {
     if (now - this.last > MAX_GAP_MS || mediaGap < 0 || mediaGap > MAX_MEDIA_GAP_S) this.reset();
     this.last = now;
     this.lastMediaTime = video.currentTime;
-    let px: Uint8ClampedArray;
-    try {
-      this.ctx.drawImage(source, 0, 0, W * SS, H * SS);
-      px = this.ctx.getImageData(0, 0, W * SS, H * SS).data;
-    } catch {
-      return false;
-    }
-    const luma = new Float32Array(W * H);
-    const rowLen = W * SS;
-    for (let y = 0; y < H * SS; y++) {
-      for (let x = 0; x < rowLen; x++) {
-        const i = (y * rowLen + x) * 4;
-        luma[((y / SS) | 0) * W + ((x / SS) | 0)] += px[i] * 0.299 + px[i + 1] * 0.587 + px[i + 2] * 0.114;
-      }
-    }
-    for (let i = 0; i < luma.length; i++) luma[i] /= 255 * SS * SS;
+    const luma = this.thumbs.take(source);
+    if (!luma) return false;
     const prev = this.prev;
     this.prev = luma;
     if (!prev) return false;

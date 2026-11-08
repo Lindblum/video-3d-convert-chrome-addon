@@ -373,8 +373,7 @@ in vec2 vUv;
 out vec4 outColor;
 ${STEREO_COMMON}
 uniform int uLayout;      // 0 = half SBS, 1 = half top-over-bottom, 2 = depth map, 3 = anaglyph,
-                          // 4 = row-interlaced (top row = left eye), 5 = 2D + depth side by side
-uniform float uHeight;    // canvas height in pixels
+                          // 5 = 2D + depth side by side (4 was row-interlaced, removed)
 uniform bool uSwap;
 uniform vec4 uContent;    // video content rect within an eye view (x, y, w, h), top-left origin
 uniform sampler2D uCaptions; // premultiplied caption layer, same uv space as the video
@@ -448,11 +447,10 @@ vec3 anaglyph(vec3 l, vec3 r) {
 
 void main() {
   vec2 p = vec2(vUv.x, 1.0 - vUv.y);
-  float side = 1.0; // which displayed image: +1 = left half / top / even rows
+  float side = 1.0; // which displayed image: +1 = left half / top
   vec2 q = p;
   if (uLayout == 0 || uLayout == 5) { side = p.x < 0.5 ? 1.0 : -1.0; q = vec2(fract(p.x * 2.0), p.y); }
   else if (uLayout == 1) { side = p.y < 0.5 ? 1.0 : -1.0; q = vec2(p.x, fract(p.y * 2.0)); }
-  else if (uLayout == 4) { side = mod(uHeight - 1.0 - floor(gl_FragCoord.y), 2.0) < 0.5 ? 1.0 : -1.0; }
   float eye = uSwap ? -side : side; // +1 = rendered from the left eye's viewpoint
 
   vec2 uv = (q - uContent.xy) / uContent.zw;

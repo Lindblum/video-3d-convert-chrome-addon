@@ -5,3 +5,4 @@ models/
 test/media/
 test/out/
 test/frames/
+*.zip

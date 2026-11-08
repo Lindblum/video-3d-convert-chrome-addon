@@ -1,6 +1,6 @@
 // Content-script side of the depth model: owns the hidden host iframe and keeps at most
 // one frame in flight so inference never queues up behind playback.
-import type { FromHost, ToHost } from '../shared/protocol';
+import type { FromHost, HostTokenMessage, ToHost } from '../shared/protocol';
 import type { DepthModel } from '../shared/settings';
 
 export interface DepthResult {
@@ -83,7 +83,16 @@ class DepthBridge {
       'position:fixed!important;left:-10px!important;top:-10px!important;width:1px!important;' +
       'height:1px!important;opacity:0!important;pointer-events:none!important;border:0!important;';
     this.armLoadTimer();
-    iframe.addEventListener('load', () => {
+    iframe.addEventListener('load', async () => {
+      // The host only accepts a connection with a token registered first (see background.ts).
+      const token = crypto.randomUUID();
+      const msg: HostTokenMessage = { type: 'host-token', token };
+      try {
+        await chrome.runtime.sendMessage(msg);
+      } catch {
+        return this.fail('the extension was reloaded; refresh the page', true);
+      }
+      if (this.iframe !== iframe) return; // disposed meanwhile
       const channel = new MessageChannel();
       this.port = channel.port1;
       this.port.onmessage = (e: MessageEvent<FromHost>) => {
@@ -92,7 +101,7 @@ class DepthBridge {
         this.onMessage(e.data);
       };
       const origin = new URL(chrome.runtime.getURL('')).origin;
-      iframe.contentWindow!.postMessage({ type: 'sbs3d-connect' }, origin, [channel.port2]);
+      iframe.contentWindow!.postMessage({ type: 'sbs3d-connect', token }, origin, [channel.port2]);
       this.post({ type: 'init', model: this.model! });
     });
     (document.body ?? document.documentElement).appendChild(iframe);

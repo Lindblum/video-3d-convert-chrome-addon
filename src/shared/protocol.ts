@@ -22,6 +22,12 @@ export type FromHost =
       ms: number;
     };
 
+/**
+ * Extension messages to the background script that guard the host connection: the content script
+ * registers a one-time token, and the host page checks the token a connection brings.
+ */
+export type HostTokenMessage = { type: 'host-token'; token: string } | { type: 'host-token-check'; token: string };
+
 // Messages from the popup to content scripts.
 export type PopupRequest = { type: 'toggle' } | { type: 'status' };
 
@@ -29,6 +35,8 @@ export interface PopupStatus {
   videos: number;
   active: number;
   mode: string;
+  /** Why 3D last failed to start or stopped on its own, if it did. */
+  error?: string;
   /** Build of the content script that answered; missing in builds before this field existed. */
   buildId?: string;
 }

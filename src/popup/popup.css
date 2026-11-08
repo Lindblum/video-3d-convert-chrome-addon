@@ -149,6 +149,9 @@ kbd {
   border-radius: 3px;
   padding: 0 3px;
 }
+.status a {
+  color: #8ab4f8;
+}
 .status.warn {
   color: #f6c344;
 }

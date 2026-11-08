@@ -92,9 +92,15 @@ export class Session {
   private mlMsAvg = 0;
   private mlCount = 0;
   private mlFailed = '';
+  /** Stopped because the browser won't let us read the video's pixels. */
+  unreadable = false;
   private statsEl: HTMLDivElement | null = null;
   private renderFrames = 0;
   private depthFrames = 0;
+  /** Size of the last frame sent to the ML model. */
+  private mlInput = '';
+  /** The video's dropped-frame count at the last stats update. */
+  private lastDropped = 0;
   private statsTimer = 0;
   private listeners: Array<() => void> = [];
 
@@ -156,11 +162,6 @@ export class Session {
 
   applySettings(s: Settings) {
     const modeChanged = s.algorithm !== this.settings.algorithm || !this.started;
-    if (s.layout === 'interlaced' && (this.settings.layout !== 'interlaced' || !this.started) && !document.fullscreenElement) {
-      this.overlay.toast('Interlaced rows only line up with the TV in fullscreen at native resolution.', 5000);
-    }
-    // Keep alternating rows crisp if the browser has to scale the canvas at all.
-    this.canvas.style.imageRendering = s.layout === 'interlaced' ? 'pixelated' : '';
     const wasFreezing = this.settings.freezeOnPause;
     this.settings = s;
     this.idle = 0;
@@ -292,6 +293,7 @@ export class Session {
       } catch (e) {
         if (e instanceof TaintedVideoError) {
           this.overlay.toast(taintedVideoMessage(this.video), 7000);
+          this.unreadable = true;
           return this.stop();
         }
         throw e;
@@ -439,6 +441,7 @@ export class Session {
 
   /** Captures the current frame at w x h and runs it through the ML model. */
   private async inferMl(w: number, h: number) {
+    this.mlInput = `${w}×${h}`;
     this.capturing = true;
     this.mlStale = false;
     this.renderer.markMlCapture(); // copied when this tick renders, the same frame as the bitmap
@@ -538,10 +541,15 @@ export class Session {
       return;
     }
     const r = this.video.getBoundingClientRect();
-    this.statsEl.style.left = `${Math.max(4, r.right - 260)}px`;
+    this.statsEl.style.left = `${Math.max(4, r.right - 330)}px`;
     this.statsEl.style.top = `${Math.max(4, r.top + 12)}px`;
-    let text = `${this.modeLabel}\nrender ${this.renderFrames} fps`;
-    if (this.mlActive) text += `\ndepth ${this.depthFrames} fps · ${Math.round(this.mlMsAvg)} ms`;
+    const v = this.video;
+    const c = this.canvas;
+    const dropped = v.getVideoPlaybackQuality?.().droppedVideoFrames ?? 0;
+    let text = `${this.modeLabel}\nrender ${this.renderFrames} fps · dropped ${Math.max(0, dropped - this.lastDropped)}/s`;
+    this.lastDropped = dropped;
+    if (this.mlActive) text += `\ndepth ${this.depthFrames} fps · ${Math.round(this.mlMsAvg)} ms · ${this.mlInput}`;
+    text += `\nvideo ${v.videoWidth}×${v.videoHeight} → ${c.width}×${c.height}`;
     if (this.mlFailed) text += `\nML off: ${this.mlFailed}`;
     this.statsEl.textContent = text;
     this.renderFrames = 0;

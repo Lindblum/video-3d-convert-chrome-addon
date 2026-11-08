@@ -1,11 +1,11 @@
 // Content script entry: finds videos, wires the hover button, keyboard shortcuts and popup
 // messages, and manages one Session per converted video.
 import { depthBridge } from '../depth/bridge';
-import { TaintedVideoError, taintedVideoMessage } from '../render/renderer';
+import { TaintedVideoError, taintedVideoMessage, taintedVideoReason } from '../render/renderer';
 import type { PopupRequest, PopupStatus } from '../shared/protocol';
 import { DEFAULT_SETTINGS, loadSettings, onSettingsChanged, saveSettings, type Layout, type Settings } from '../shared/settings';
 import { Session } from './session';
-import { Overlay } from './ui';
+import { Overlay, type ButtonState } from './ui';
 
 /**
  * Dispatched on the document by each copy of this script as it starts. When the extension is
@@ -24,7 +24,6 @@ const MIN_H = 112;
 const LAYOUTS: [Layout, string][] = [
   ['hsbs', 'SBS'],
   ['htab', 'TOB'],
-  ['interlaced', 'Interlaced'],
   ['anaglyph', 'Anaglyph'],
   ['depth', 'Depth Map'],
   ['rgbd', 'Video | Depth Map'],
@@ -85,6 +84,14 @@ function main() {
     return candidates().sort((a, b) => area(b) - area(a))[0] ?? null;
   }
 
+  /** Why 3D last failed to start or stopped on its own (shown in the popup). */
+  let lastError = '';
+  /** Videos whose pixels the browser won't let us read, with what they were playing then. */
+  const unreadable = new WeakMap<HTMLVideoElement, string>();
+  const isUnreadable = (v: HTMLVideoElement) => !!v.mediaKeys || unreadable.get(v) === v.currentSrc;
+  const buttonState = (v: HTMLVideoElement): ButtonState =>
+    sessions.has(v) ? 'on' : isUnreadable(v) ? 'unavailable' : 'off';
+
   function toggle(video: HTMLVideoElement): boolean {
     const existing = sessions.get(video);
     if (existing) {
@@ -96,21 +103,30 @@ function main() {
     try {
       session = new Session(video, settings, ui(), (s) => {
         sessions.delete(s.video);
-        overlay?.setButtonState(s.video, false);
+        if (s.unreadable) {
+          unreadable.set(s.video, s.video.currentSrc);
+          lastError = taintedVideoReason(s.video);
+        }
+        overlay?.setButtonState(s.video, buttonState(s.video));
       });
       session.start();
     } catch (e) {
       session?.stop();
       if (e instanceof TaintedVideoError) {
+        unreadable.set(video, video.currentSrc);
+        lastError = taintedVideoReason(video);
         ui().toast(taintedVideoMessage(video), 7000);
       } else {
-        ui().toast(`3D failed to start: ${e instanceof Error ? e.message : e}`, 7000);
+        lastError = e instanceof Error ? e.message : String(e);
+        ui().toast(`3D failed to start: ${lastError}`, 7000);
         console.error('[2D-3D]', e);
       }
+      overlay?.setButtonState(video, buttonState(video));
       return false;
     }
+    lastError = '';
     sessions.set(video, session);
-    overlay?.setButtonState(video, true);
+    overlay?.setButtonState(video, 'on');
     ui().toast(`3D · ${session.modeLabel}`, 3000);
     return true;
   }
@@ -131,7 +147,7 @@ function main() {
           const r = v.getBoundingClientRect();
           return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
         }) ?? null;
-        if (hovered) ui().showButton(hovered, sessions.has(hovered));
+        if (hovered) ui().showButton(hovered, buttonState(hovered));
       });
     },
     { passive: true, signal },
@@ -170,7 +186,7 @@ function main() {
       if (v) toggle(v);
     }
     const first = sessions.values().next().value;
-    respond({ videos: videos.length, active: sessions.size, mode: first?.modeLabel ?? '', buildId: __BUILD_ID__ });
+    respond({ videos: videos.length, active: sessions.size, mode: first?.modeLabel ?? '', error: lastError || undefined, buildId: __BUILD_ID__ });
     return false;
   };
   chrome.runtime.onMessage.addListener(onMessage);

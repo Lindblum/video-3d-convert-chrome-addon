@@ -133,7 +133,7 @@ try {
       }
       await page.screenshot({ path: 'test/out/sbs-ml.png' });
     }
-    for (const layout of ['htab', 'interlaced', 'anaglyph', 'depth', 'rgbd', 'hsbs']) {
+    for (const layout of ['htab', 'anaglyph', 'depth', 'rgbd', 'hsbs']) {
       await hostFrame.evaluate((l) => chrome.storage.local.set({ layout: l }), layout);
       await sleep(1500);
       if (layout !== 'hsbs') await page.screenshot({ path: `test/out/${layout}.png` });

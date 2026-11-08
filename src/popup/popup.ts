@@ -13,7 +13,10 @@ const FORMAT: Partial<Record<keyof Settings, (v: number) => string>> = {
   edgeSnap: (v) => (v ? v.toFixed(2) : 'off'),
 };
 
-async function send(msg: PopupRequest): Promise<PopupStatus | null> {
+/** The tab's answer; 'no-access' when the user hasn't allowed the extension on its page. */
+type TabStatus = PopupStatus | 'no-access' | null;
+
+async function send(msg: PopupRequest): Promise<TabStatus> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.id == null) return null;
   const ask = async () => {
@@ -31,23 +34,38 @@ async function send(msg: PopupRequest): Promise<PopupStatus | null> {
   // working copy is already loaded.
   try {
     await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ['content.js'] });
-  } catch {
-    return null; // a page extensions can't touch (chrome://, the web store)
+  } catch (e) {
+    // Site access set to "on click" or to other sites only; otherwise a page extensions can't
+    // touch at all (chrome://, the web store).
+    return /permission/i.test(String(e)) ? 'no-access' : null;
   }
   return ask();
 }
 
-function showStatus(s: PopupStatus | null) {
+async function showStatus(t: TabStatus) {
+  const s = t === 'no-access' ? null : t;
   const on = !!s && s.active > 0;
   toggleBtn.disabled = !s;
   toggleBtn.textContent = on ? 'On' : 'Off';
   toggleBtn.classList.toggle('on', on);
   document.body.classList.toggle('off', !on);
   statusEl.classList.toggle('warn', !!s && s.buildId !== __BUILD_ID__);
-  if (!s) statusEl.textContent = 'No video found on this page. (Just reloaded the extension? Refresh this tab.)';
+  if (t === 'no-access') {
+    // The browser hides the address of a page we can't access, so it may be a local file too.
+    const files = (await chrome.extension.isAllowedFileSchemeAccess()) ? '' : ' (or Allow access to file URLs, for a local file)';
+    statusEl.textContent = `2D-3D can't read this page. Allow it under Site access${files} in the extension's `;
+    const link = document.createElement('a');
+    link.href = '#';
+    link.textContent = 'details';
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
+    });
+    statusEl.append(link, '.');
+  } else if (!s) statusEl.textContent = 'No video found on this page. (Just reloaded the extension? Refresh this tab.)';
   else if (s.buildId !== __BUILD_ID__) statusEl.textContent = 'This tab is running an older version. Reload the extension, then refresh this tab.';
   else if (s.active) statusEl.textContent = `3D · ${s.mode}`;
-  else statusEl.textContent = `${s.videos} video${s.videos > 1 ? 's' : ''} found · 2D`;
+  else statusEl.textContent = `${s.videos} video${s.videos > 1 ? 's' : ''} found · ${s.error ? `Couldn't start: ${s.error}` : '2D'}`;
 }
 
 // Option sections remember whether they were left open or closed.

@@ -8,7 +8,7 @@ export type DepthModel = 'da2' | 'da3' | 'midas';
 /** Depth estimated in the depth shader, without a model. */
 export type ShaderDepth = 'heuristic' | 'scene' | 'ground' | 'motion';
 export type HoleFill = 'off' | 'sharp' | 'soft' | 'mirror';
-export type Layout = 'hsbs' | 'htab' | 'interlaced' | 'anaglyph' | 'depth' | 'rgbd';
+export type Layout = 'hsbs' | 'htab' | 'anaglyph' | 'depth' | 'rgbd';
 
 export interface Settings {
   algorithm: Algorithm;
@@ -72,7 +72,7 @@ export async function loadSettings(): Promise<Settings> {
   const stored = (await chrome.storage.local.get(null)) as Partial<Settings> & Record<string, unknown>;
   const settings = { ...DEFAULT_SETTINGS, ...stored } as Settings & Record<string, unknown>;
   // Settings from older versions that no longer exist.
-  if ((settings.layout as string) === 'hitmap') settings.layout = DEFAULT_SETTINGS.layout;
+  if (['hitmap', 'interlaced'].includes(settings.layout as string)) settings.layout = DEFAULT_SETTINGS.layout;
   // Before Algorithm, depth had a mode (auto / ml / heuristic) and a separate ML model.
   if (stored.algorithm === undefined && stored.depthMode !== undefined) {
     if (stored.depthMode === 'heuristic') settings.algorithm = 'heuristic';

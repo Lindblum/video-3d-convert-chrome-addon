@@ -1,6 +1,6 @@
 // Bundles the extension into ./dist. Usage: node build.mjs [--watch]
 import * as esbuild from 'esbuild';
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 
 const watch = process.argv.includes('--watch');
 // The onnxruntime-web/webgpu bundle embeds its JS glue and only fetches this wasm file.
@@ -10,7 +10,10 @@ async function copyStatic() {
   await mkdir('dist/depth', { recursive: true });
   await mkdir('dist/popup', { recursive: true });
   await mkdir('dist/ort', { recursive: true });
-  await cp('src/manifest.json', 'dist/manifest.json');
+  // The version lives in package.json only.
+  const { version } = JSON.parse(await readFile('package.json', 'utf8'));
+  const manifest = JSON.parse(await readFile('src/manifest.json', 'utf8'));
+  await writeFile('dist/manifest.json', JSON.stringify({ ...manifest, version }, null, 2));
   await cp('src/depth/host.html', 'dist/depth/host.html');
   await cp('src/popup/popup.html', 'dist/popup/popup.html');
   await cp('src/popup/popup.css', 'dist/popup/popup.css');
@@ -32,6 +35,7 @@ const common = {
 const configs = [
   { ...common, entryPoints: ['src/content/index.ts'], outfile: 'dist/content.js', format: 'iife' },
   { ...common, entryPoints: ['src/popup/popup.ts'], outfile: 'dist/popup/popup.js', format: 'iife' },
+  { ...common, entryPoints: ['src/background.ts'], outfile: 'dist/background.js', format: 'iife' },
   { ...common, entryPoints: ['src/depth/host.ts'], outfile: 'dist/depth/host.js', format: 'esm' },
 ];
 

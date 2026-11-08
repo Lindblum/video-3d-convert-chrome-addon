@@ -5,10 +5,11 @@ const CSS = `
 :host { all: initial; }
 .layer { position: fixed; inset: 0; pointer-events: none; z-index: 2147483647;
   font: 600 13px/1.3 system-ui, sans-serif; }
-.btn { position: fixed; pointer-events: auto; cursor: pointer; border: 0; border-radius: 6px;
+/* Clickable only while shown: a faded-out button would still catch clicks on the page. */
+.btn { position: fixed; pointer-events: none; cursor: pointer; border: 0; border-radius: 6px;
   padding: 6px 10px; background: rgba(20,20,20,.78); color: #fff; font: inherit;
   letter-spacing: .5px; opacity: 0; transition: opacity .2s; }
-.btn.show { opacity: 1; }
+.btn.show { opacity: 1; pointer-events: auto; }
 .btn.on { background: rgba(0,120,255,.9); }
 .toast { position: fixed; left: 50%; bottom: 10%; transform: translateX(-50%); max-width: 70vw;
   background: rgba(20,20,20,.9); color: #fff; padding: 10px 16px; border-radius: 8px;
@@ -17,6 +18,14 @@ const CSS = `
 .stats { position: fixed; background: rgba(0,0,0,.65); color: #9f9; padding: 3px 6px;
   border-radius: 4px; font: 500 11px/1.3 ui-monospace, monospace; white-space: pre; }
 `;
+
+// Hover buttons of our sibling add-ons stack top-left in a fixed order (same size, so rows
+// line up): Moutheyes, Video Filters, 2D-3D Video Converter.
+const BUTTON_ROW = 2;
+
+/** The hover button's state: unavailable when the browser won't let us read the video's pixels. */
+export type ButtonState = 'on' | 'off' | 'unavailable';
+const LABELS: Record<ButtonState, string> = { on: '2D-3D: On', off: '2D-3D: Off', unavailable: '2D-3D: Unavailable' };
 
 export class Overlay {
   readonly host = document.createElement('sbs3d-overlay');
@@ -47,10 +56,13 @@ export class Overlay {
     root.append(style, this.layer);
     this.reparent();
     document.addEventListener('fullscreenchange', this.reparent);
+    // The button is placed once per hover, so scrolling would leave it over other content.
+    document.addEventListener('scroll', this.hideButton, { capture: true, passive: true });
   }
 
   dispose() {
     document.removeEventListener('fullscreenchange', this.reparent);
+    document.removeEventListener('scroll', this.hideButton, { capture: true });
     clearTimeout(this.toastTimer);
     clearTimeout(this.hideTimer);
     this.host.remove();
@@ -63,27 +75,27 @@ export class Overlay {
     if (this.host.parentNode !== parent) parent.appendChild(this.host);
   };
 
-  showButton(video: HTMLVideoElement, active: boolean) {
+  showButton(video: HTMLVideoElement, state: ButtonState) {
     const r = video.getBoundingClientRect();
     this.buttonTarget = video;
-    this.setButtonState(video, active);
+    this.setButtonState(video, state);
     this.button.style.left = `${Math.max(4, r.left + 12)}px`;
-    this.button.style.top = `${Math.max(4, r.top + 12)}px`;
+    this.button.style.top = `${Math.max(4, r.top + 12) + BUTTON_ROW * (this.button.offsetHeight + 6)}px`;
     this.button.classList.add('show');
     clearTimeout(this.hideTimer);
     this.hideTimer = window.setTimeout(() => this.hideButton(), 2500);
   }
 
   /** Updates the button's label if it belongs to this video (e.g. right after a toggle). */
-  setButtonState(video: HTMLVideoElement, active: boolean) {
+  setButtonState(video: HTMLVideoElement, state: ButtonState) {
     if (this.buttonTarget !== video) return;
-    this.button.textContent = active ? '2D-3D: On' : '2D-3D: Off';
-    this.button.classList.toggle('on', active);
+    this.button.textContent = LABELS[state];
+    this.button.classList.toggle('on', state === 'on');
   }
 
-  hideButton() {
+  hideButton = () => {
     this.button.classList.remove('show');
-  }
+  };
 
   toast(text: string, ms = 4000) {
     this.toastEl.textContent = text;

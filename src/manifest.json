@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "2D-3D Video Converter",
-  "version": "0.1.0",
   "description": "Converts any HTML5 video to side-by-side 3D in real time for 3D TVs and monitors.",
+  "minimum_chrome_version": "120",
   "permissions": [
     "storage",
     "unlimitedStorage",
@@ -11,6 +11,9 @@
   "host_permissions": [
     "<all_urls>"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_title": "2D-3D Video Converter",
     "default_popup": "popup/popup.html",
@@ -34,9 +37,7 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "depth/host.html",
-        "depth/host.js",
-        "ort/*"
+        "depth/host.html"
       ],
       "matches": [
         "<all_urls>"

@@ -35,7 +35,7 @@ const HOLE_FILL_INDEX: Record<HoleFill, number> = { off: 0, sharp: 1, soft: 2, m
 // Matches uMode in DEPTH_FS.
 const MODE_INDEX: Record<FrameParams['mode'], number> = { heuristic: 0, ml: 1, scene: 2, ground: 3, motion: 4 };
 
-const LAYOUT_INDEX: Record<Layout, number> = { hsbs: 0, htab: 1, depth: 2, anaglyph: 3, interlaced: 4, rgbd: 5 };
+const LAYOUT_INDEX: Record<Layout, number> = { hsbs: 0, htab: 1, depth: 2, anaglyph: 3, rgbd: 5 };
 /** Width of the depth state buffers; height follows the video aspect ratio. */
 const DEPTH_STATE_WIDTH = 384;
 /** Max width of the edge-refined depth map the stereo pass reads. */
@@ -45,17 +45,23 @@ type Uniforms = Record<string, WebGLUniformLocation | null>;
 type Target = { tex: WebGLTexture; fbo: WebGLFramebuffer };
 
 /** Layouts that show stereo views, so they can have holes to fill. */
-const STEREO_LAYOUTS = new Set<Layout>(['hsbs', 'htab', 'anaglyph', 'interlaced']);
+const STEREO_LAYOUTS = new Set<Layout>(['hsbs', 'htab', 'anaglyph']);
 
 export class TaintedVideoError extends Error {}
 
-/** Why the browser won't let us read this video's pixels, for the toast. */
-export function taintedVideoMessage(video: HTMLVideoElement): string {
-  if (video.mediaKeys) return "This video is DRM-protected, so the browser won't let the extension read its pixels.";
+/** Why the browser won't let us read this video's pixels, as a clause for the popup ("Couldn't start: ..."). */
+export function taintedVideoReason(video: HTMLVideoElement): string {
+  if (video.mediaKeys) return "this video is DRM-protected, so the browser won't let the extension read its pixels";
   if (location.protocol === 'file:') {
-    return "The browser won't let extensions read the pixels of a video opened from a local file. Serve the page over http instead (e.g. npx http-server).";
+    return "the browser won't let extensions read the pixels of a video opened from a local file; serve the page over http instead (e.g. npx http-server)";
   }
-  return "This video is protected (cross-origin or DRM), so the browser won't let the extension read its pixels.";
+  return "this video is protected (cross-origin or DRM), so the browser won't let the extension read its pixels";
+}
+
+/** taintedVideoReason() as a sentence, for a toast. */
+export function taintedVideoMessage(video: HTMLVideoElement): string {
+  const reason = taintedVideoReason(video);
+  return `${reason[0].toUpperCase()}${reason.slice(1)}.`;
 }
 
 export class Renderer {
@@ -132,7 +138,7 @@ export class Renderer {
     this.depthU = this.uniforms(this.depthProg, ['uPrev', 'uVideo', 'uMl', 'uMlPrev', 'uMode', 'uMlRange', 'uMlRangePrev', 'uMlBlend', 'uAlpha', 'uTexel', 'uReset', 'uNewFrame', 'uVideoMip']);
     this.refineU = this.uniforms(this.refineProg, ['uState', 'uGuide', 'uVideo', 'uLowSize', 'uSnap']);
     this.dilateU = this.uniforms(this.dilateProg, ['uDepth', 'uStep', 'uRadius']);
-    this.stereoU = this.uniforms(this.stereoProg, ['uVideo', 'uDepth', 'uLayout', 'uStrength', 'uConv', 'uSwap', 'uContent', 'uCaptions', 'uCapOn', 'uCapDisp', 'uHeight', 'uHoleFill', 'uFillMargin', 'uDepthTexelX', 'uFillTex', 'uFillL', 'uFillR']);
+    this.stereoU = this.uniforms(this.stereoProg, ['uVideo', 'uDepth', 'uLayout', 'uStrength', 'uConv', 'uSwap', 'uContent', 'uCaptions', 'uCapOn', 'uCapDisp', 'uHoleFill', 'uFillMargin', 'uDepthTexelX', 'uFillTex', 'uFillL', 'uFillR']);
     this.fillEyeU = this.uniforms(this.fillEyeProg, ['uVideo', 'uDepth', 'uStrength', 'uConv', 'uDepthTexelX', 'uEye']);
     this.fillPullU = this.uniforms(this.fillPullProg, ['uSrc']);
     this.fillPushU = this.uniforms(this.fillPushProg, ['uLevel', 'uCoarse']);
@@ -258,7 +264,6 @@ export class Renderer {
     gl.uniform1f(this.stereoU.uConv, p.convergence);
     gl.uniform1i(this.stereoU.uSwap, p.swapEyes ? 1 : 0);
     gl.uniform4f(this.stereoU.uContent, ...p.content);
-    gl.uniform1f(this.stereoU.uHeight, this.canvas.height);
     this.bind(2, this.capTex, this.stereoU.uCaptions);
     gl.uniform1i(this.stereoU.uCapOn, p.captions ? 1 : 0);
     // Float captions just in front of the nearest scene depth so they never sit "inside"

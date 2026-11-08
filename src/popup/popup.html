@@ -50,25 +50,18 @@
         <select id="layout">
           <option value="hsbs">SBS</option>
           <option value="htab">TOB</option>
-          <option value="interlaced">Interlaced</option>
-          <option value="anaglyph">Anaglyph (red/cyan glasses)</option>
+          <option value="anaglyph">Anaglyph (Red/Cyan)</option>
           <option value="depth">Depth Map</option>
           <option value="rgbd">Video | Depth Map</option>
         </select>
       </label>
       <label>3D strength <output for="strength"></output>
-        <input id="strength" type="range" min="0.5" max="8" step="0.1" />
+        <input id="strength" type="range" min="0" max="10" step="0.1" />
       </label>
       <label>Convergence <output for="convergence"></output>
         <input id="convergence" type="range" min="0" max="1" step="0.01" />
       </label>
       <label class="check"><input id="swapEyes" type="checkbox" /> Swap eyes</label>
-    </details>
-
-    <details class="section" data-section="overlays" open>
-      <summary>Overlays</summary>
-      <label class="check"><input id="captions" type="checkbox" /> 3D captions (YouTube and standard)</label>
-      <label class="check"><input id="showStats" type="checkbox" /> Show stats overlay</label>
     </details>
 
     <details class="section" data-section="cleanup" open>
@@ -94,6 +87,12 @@
           </select>
         </label>
       </fieldset>
+    </details>
+
+    <details class="section" data-section="overlays" open>
+      <summary>Overlays</summary>
+      <label class="check"><input id="captions" type="checkbox" /> 3D captions (YouTube and standard)</label>
+      <label class="check"><input id="showStats" type="checkbox" /> Show stats overlay</label>
     </details>
 
     <footer>
